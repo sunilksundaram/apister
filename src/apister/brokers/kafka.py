@@ -17,8 +17,8 @@ from apister.types import BrokerDependencyError
 try:
     from aiokafka import AIOKafkaConsumer, AIOKafkaProducer
 except ImportError:  # pragma: no cover - optional extra
-    AIOKafkaConsumer = None
-    AIOKafkaProducer = None
+    AIOKafkaConsumer = None  # type: ignore[assignment]
+    AIOKafkaProducer = None  # type: ignore[assignment]
 
 
 class KafkaBroker:

@@ -17,7 +17,7 @@ from apister.types import BrokerDependencyError
 try:
     import aio_pika
 except ImportError:  # pragma: no cover - optional extra
-    aio_pika = None
+    aio_pika = None  # type: ignore[assignment]
 
 
 class RabbitMQBroker:
