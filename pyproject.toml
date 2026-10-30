@@ -1,0 +1,24 @@
+[project]
+name = "apister"
+version = "0.1.0"
+description = "Lightweight durable asyncio pub/sub with broker reconnect"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.14.7"
+dependencies = []
+
+[project.scripts]
+apister = "apister.main:main"
+
+[project.optional-dependencies]
+rabbitmq = ["aio-pika>=9.4"]
+kafka = ["aiokafka>=0.12"]
+
+[project.urls]
+Homepage = "https://github.com/sunilksundaram/apister"
+Repository = "https://github.com/sunilksundaram/apister"
+Issues = "https://github.com/sunilksundaram/apister/issues"
+
+[build-system]
+requires = ["uv_build>=0.12.19,<0.13.0"]
+build-backend = "uv_build"

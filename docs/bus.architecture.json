@@ -1,0 +1,51 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "Apister Bus",
+    "output": "bus.html",
+    "quality_profile": "showcase",
+    "locale": "en",
+    "viewBox": [1100, 420],
+    "views": [
+      {
+        "id": "publish-path",
+        "label": "Publish path",
+        "focus": ["publishers", "bus", "ledger", "subscribers"],
+        "note": "A payload is appended once, then fan-out carries only the ledger offset."
+      },
+      {
+        "id": "brokers",
+        "label": "External brokers",
+        "focus": ["reconnect", "redis", "rabbitmq", "kafka"],
+        "note": "The outbox resumes from a cursor after reconnect."
+      }
+    ]
+  },
+  "components": [
+    { "id": "ledger", "type": "database", "label": "Segment ledger", "sublabel": "append-only", "pos": [210, 24], "size": [150, 58] },
+    { "id": "dedup", "type": "database", "label": "Message-id log", "sublabel": "bounded tail", "pos": [430, 24], "size": [150, 58] },
+    { "id": "publishers", "type": "external", "label": "Publishers", "sublabel": "in-process tasks", "pos": [20, 150], "size": [150, 58] },
+    { "id": "bus", "type": "backend", "label": "Bus writer", "sublabel": "trie + lock", "pos": [210, 150], "size": [150, 58], "tag": "single writer" },
+    { "id": "subscribers", "type": "external", "label": "Subscribers", "sublabel": "bounded queues", "pos": [430, 150], "size": [150, 58] },
+    { "id": "reconnect", "type": "backend", "label": "Reconnect", "sublabel": "backoff + jitter", "pos": [210, 280], "size": [150, 58] },
+    { "id": "redis", "type": "messagebus", "label": "Redis", "sublabel": "RESP pub/sub", "pos": [460, 280], "size": [140, 56] },
+    { "id": "rabbitmq", "type": "messagebus", "label": "RabbitMQ", "sublabel": "topic exchange", "pos": [680, 280], "size": [150, 56] },
+    { "id": "kafka", "type": "messagebus", "label": "Kafka", "sublabel": "optional client", "pos": [900, 280], "size": [140, 56] }
+  ],
+  "connections": [
+    { "id": "publish", "from": "publishers", "to": "bus", "label": "publish", "variant": "emphasis" },
+    { "id": "append", "from": "bus", "to": "ledger", "label": "append", "fromSide": "top", "toSide": "bottom", "labelDx": -36 },
+    { "id": "remember", "from": "bus", "to": "dedup", "label": "message id", "fromSide": "top", "toSide": "bottom" },
+    { "id": "fanout", "from": "bus", "to": "subscribers", "label": "offsets" },
+    { "id": "outbox", "from": "bus", "to": "reconnect", "label": "outbox", "fromSide": "bottom", "toSide": "top", "labelAt": [285, 222] },
+    { "id": "to-redis", "from": "reconnect", "to": "redis", "label": "RESP" },
+    { "id": "to-rabbit", "from": "reconnect", "to": "rabbitmq", "label": "AMQP", "fromSide": "bottom", "toSide": "bottom" },
+    { "id": "to-kafka", "from": "reconnect", "to": "kafka", "label": "produce", "fromSide": "bottom", "toSide": "bottom" }
+  ],
+  "cards": [
+    { "dot": "cyan", "title": "Backpressure", "items": ["Bounded offset queues", "Block or drop a slow consumer"] },
+    { "dot": "emerald", "title": "Durability", "items": ["Append-only segment ledger", "Sentinel shutdown and fsync"] },
+    { "dot": "amber", "title": "Brokers", "items": ["Redis built in; RabbitMQ and Kafka optional", "Backoff reconnect and id dedup"] }
+  ]
+}
