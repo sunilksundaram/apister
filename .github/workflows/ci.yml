@@ -4,7 +4,7 @@ name: CI & Security Quality Gate
 # PIPELINE ARCHITECTURE & QUALITY GATES:
 #
 # ┌────────────────────────────────────────────────────────┐
-# │ 1. CVE Security Audit (pip-audit & Bandit SAST)       │
+# │ 1. CVE Security Audit (pip-audit & Bandit SAST)        │
 # └────────────────────────────────────────────────────────┘
 #                            ▲
 # ┌──────────────────────────┴─────────────────────────────┐
@@ -16,7 +16,7 @@ name: CI & Security Quality Gate
 # └────────────────────────────────────────────────────────┘
 #                            ▼
 # ┌────────────────────────────────────────────────────────┐
-# │ 4. Distribution Build Verification (Wheel & Sdist)    │
+# │ 4. Distribution Build Verification (Wheel & Sdist)     │
 # └────────────────────────────────────────────────────────┘
 # ==============================================================================
 

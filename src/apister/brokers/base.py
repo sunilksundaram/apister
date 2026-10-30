@@ -5,7 +5,8 @@ Adapters move bytes. Reconnect, dedup, and persistence stay in the bus.
 
 from __future__ import annotations
 
-from typing import Protocol, Sequence
+from collections.abc import Sequence
+from typing import Protocol
 
 
 class Incoming:

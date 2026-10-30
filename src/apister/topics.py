@@ -50,12 +50,12 @@ def topic_matches(pattern: str, topic: str) -> bool:
 def _match(pattern: tuple[str, ...], topic: tuple[str, ...], i: int, j: int) -> bool:
     if i == len(pattern):
         return j == len(topic)
-    token = pattern[i]
-    if token == "#":
+    segment = pattern[i]
+    if segment == "#":
         return True
     if j == len(topic):
         return False
-    if token == "+" or token == topic[j]:
+    if segment == "+" or segment == topic[j]:
         return _match(pattern, topic, i + 1, j + 1)
     return False
 

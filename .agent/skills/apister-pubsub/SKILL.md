@@ -27,12 +27,12 @@ from apister import Bus, OverflowPolicy
 
 async with await Bus.open(
     Path("data/bus"),
-    max_queue_size=1024,             # Max offset items per subscriber queue
-    command_queue_size=4096,         # Command queue depth for writer loop
-    overflow=OverflowPolicy.BLOCK,   # Backpressure strategy
+    max_queue_size=1024,  # Max offset items per subscriber queue
+    command_queue_size=4096,  # Command queue depth for writer loop
+    overflow=OverflowPolicy.BLOCK,  # Backpressure strategy
     segment_bytes=64 * 1024 * 1024,  # Rotate segments at 64 MiB
-    commit_every=128,                # Fsync every 128 appends
-    fsync_interval_s=0.01,           # Periodic fsync interval (10 ms)
+    commit_every=128,  # Fsync every 128 appends
+    fsync_interval_s=0.01,  # Periodic fsync interval (10 ms)
     retain_bytes=10 * 1024 * 1024 * 1024,  # Retention cap (10 GiB)
 ) as bus:
     # Run application logic
@@ -109,8 +109,8 @@ from apister import SubscriptionClosed
 
 sub = await bus.subscribe(
     "jobs/compute",
-    name="worker-alpha",   # Persistent cursor name
-    inflight_limit=10,     # Maximum unacked messages at once
+    name="worker-alpha",  # Persistent cursor name
+    inflight_limit=10,  # Maximum unacked messages at once
 )
 
 try:

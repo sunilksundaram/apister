@@ -33,7 +33,7 @@ class ReconnectingBroker:
         self._ready = False
         self._stop = asyncio.Event()
         self._lock = asyncio.Lock()
-        self._rng = random.Random()
+        self._rng = random.Random()  # nosec: B311
         self._reader: asyncio.Task[None] | None = None
         self.connects = 0
         self.reconnects = 0

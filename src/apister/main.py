@@ -34,7 +34,7 @@ async def main() -> None:
             (exact, [b"game over"]),
             (wild, [b"game over", b"clear"]),
         ):
-            for payload in expected:
+            for _payload in expected:
                 envelope = await subscription.get()
                 print(f"{subscription.pattern} <- {envelope.topic} {envelope.payload!r}")
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
+
 from apister import Bus, SubscriptionClosed
 
 
@@ -32,7 +33,7 @@ async def main() -> None:
 
         # Produce tasks
         for i in range(10):
-            await bus.publish(f"tasks/item-{i}", f"payload-{i}".encode("utf-8"))
+            await bus.publish(f"tasks/item-{i}", f"payload-{i}".encode())
             await asyncio.sleep(0.02)
 
         # Allow workers to finish
@@ -43,4 +44,3 @@ async def main() -> None:
 
 if __name__ == "__main__":
     asyncio.run(main())
-

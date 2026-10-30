@@ -11,9 +11,9 @@ Guards against regressions in:
 from __future__ import annotations
 
 import asyncio
+import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
-import unittest
 
 from apister.bus import Bus
 from apister.dedup import DedupLog
@@ -21,7 +21,6 @@ from apister.topics import topic_matches
 from apister.types import (
     OverflowPolicy,
     PublishTimeout,
-    SubscriptionClosed,
 )
 
 
@@ -40,7 +39,7 @@ class StorageAndAckRegressionTests(unittest.IsolatedAsyncioTestCase):
                 await bus1.publish("jobs", b"job-3")
 
                 msg1 = await sub.get()
-                msg2 = await sub.get()
+                _msg2 = await sub.get()
                 msg3 = await sub.get()
 
                 # Ack out of order: ack msg3, then msg1
@@ -49,15 +48,17 @@ class StorageAndAckRegressionTests(unittest.IsolatedAsyncioTestCase):
             finally:
                 await bus1.shutdown()
 
-            # Session 2: reopen with same cursor name; must redeliver from msg2
+            # Session 2: reopen with same cursor name; must redeliver from msg2 and then msg3
             bus2 = await Bus.open(path, commit_every=1)
             try:
                 sub2 = await bus2.subscribe("jobs", name="worker-regress")
-                redelivered = await asyncio.wait_for(sub2.get(), timeout=1.0)
-                self.assertEqual(redelivered.payload, b"job-2")
+                msg2_re = await asyncio.wait_for(sub2.get(), timeout=1.0)
+                self.assertEqual(msg2_re.payload, b"job-2")
+                await sub2.ack(msg2_re)
 
-                # Once msg2 is acked, contiguous cursor advances past msg3
-                await sub2.ack(redelivered)
+                msg3_re = await asyncio.wait_for(sub2.get(), timeout=1.0)
+                self.assertEqual(msg3_re.payload, b"job-3")
+                await sub2.ack(msg3_re)
 
                 # No more unacked messages
                 with self.assertRaises(TimeoutError):
@@ -161,4 +162,3 @@ class DedupAndTopicRegressionTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

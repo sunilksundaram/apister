@@ -32,7 +32,7 @@ class RedisProtocolTests(unittest.IsolatedAsyncioTestCase):
                         writer.write(_pmessage(pattern, b"news/sports", b"hello"))
                         await writer.drain()
                         continue
-            except (asyncio.CancelledError, ConnectionError, OSError, EOFError):
+            except asyncio.CancelledError, ConnectionError, OSError, EOFError:
                 return
             finally:
                 writer.close()

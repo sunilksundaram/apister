@@ -19,7 +19,7 @@ from collections.abc import Sequence
 from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Self
+from typing import Any, Self
 
 from apister.brokers.base import BrokerAdapter, Incoming
 from apister.dedup import DedupLog
@@ -178,7 +178,7 @@ class Subscription:
             raise SubscriptionClosed()
         item = await self.queue.get()
         self._bus._nudge(self)
-        if item is SHUTDOWN:
+        if item is SHUTDOWN or isinstance(item, _ShutdownSentinel):
             self._closed = True
             raise SubscriptionClosed()
         return await self._bus._materialize(item)
@@ -376,7 +376,9 @@ class Bus:
         parse_topic(topic, pattern=False)
         body = _as_bytes(payload)
         if len(body) > self._max_payload_bytes:
-            raise PayloadTooLarge(f"payload is {len(body)} bytes; limit is {self._max_payload_bytes}")
+            raise PayloadTooLarge(
+                f"payload is {len(body)} bytes; limit is {self._max_payload_bytes}"
+            )
         loop = asyncio.get_running_loop()
         future: asyncio.Future[Envelope | None] = loop.create_future()
         deadline = None if timeout is None else time.monotonic() + timeout
@@ -673,7 +675,10 @@ class Bus:
         return True
 
     def _must_park(self, subscription: Subscription) -> bool:
-        if subscription._replay_pos is not None and subscription._replay_pos < subscription.min_live_offset:
+        if (
+            subscription._replay_pos is not None
+            and subscription._replay_pos < subscription.min_live_offset
+        ):
             return True
         if subscription._pending:
             return True
@@ -962,10 +967,10 @@ class Bus:
         for path, offset in pending:
             self._keep_cursor(merged, path, offset)
         for subscription in self._subscribers:
-            path = subscription._cursor_path
-            if path is None or not subscription._cursor_dirty:
+            sub_path = subscription._cursor_path
+            if sub_path is None or not subscription._cursor_dirty:
                 continue
-            self._keep_cursor(merged, path, subscription.cursor)
+            self._keep_cursor(merged, sub_path, subscription.cursor)
             subscription._cursor_dirty = False
         retired = self._retired_cursors
         self._retired_cursors = {}
@@ -986,10 +991,10 @@ class Bus:
         for path, offset in pending:
             self._keep_cursor(merged, path, offset)
         for subscription in self._subscribers:
-            path = subscription._cursor_path
-            if path is None:
+            sub_path = subscription._cursor_path
+            if sub_path is None:
                 continue
-            self._keep_cursor(merged, path, subscription.cursor)
+            self._keep_cursor(merged, sub_path, subscription.cursor)
             subscription._cursor_dirty = False
         retired = self._retired_cursors
         self._retired_cursors = {}
@@ -1122,12 +1127,12 @@ class Bus:
         return await asyncio.to_thread(self._ledger.read, offset)
 
 
-def _ok(future: asyncio.Future[object], value: object) -> None:
+def _ok(future: asyncio.Future[Any], value: Any = None) -> None:
     if not future.done():
         future.set_result(value)
 
 
-def _fail(future: asyncio.Future[object], exc: BaseException) -> None:
+def _fail(future: asyncio.Future[Any], exc: BaseException) -> None:
     if not future.done():
         future.set_exception(exc)
 

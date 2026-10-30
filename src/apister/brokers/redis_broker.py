@@ -147,7 +147,7 @@ class _Resp:
         self._writer.close()
         try:
             await self._writer.wait_closed()
-        except (ConnectionError, OSError, RuntimeError):
+        except ConnectionError, OSError, RuntimeError:
             return
 
 

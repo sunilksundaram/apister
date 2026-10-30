@@ -12,6 +12,7 @@ import struct
 import threading
 import zlib
 from pathlib import Path
+from typing import Any
 
 from apister.types import Envelope, LedgerCorrupt, OffsetUnavailable
 
@@ -46,12 +47,12 @@ class Ledger:
         self._io = threading.Lock()
         self._dir.mkdir(parents=True, exist_ok=True)
         self._segments: list[tuple[int, int, Path]] = []
-        self._reads: dict[Path, object] = {}
+        self._reads: dict[Path, Any] = {}
         self._end_offset = 0
         self._active_base = 0
         self._active_size = 0
         self._active_path = directory / f"{0:016x}.seg"
-        self._fh: object = None
+        self._fh: Any = None
         self._since_commit = 0
         self._recover()
 
@@ -322,7 +323,7 @@ class Ledger:
             return self._active_path, offset - self._active_base
         raise OffsetUnavailable(offset)
 
-    def _reader(self, path: Path) -> object:
+    def _reader(self, path: Path) -> Any:
         handle = self._reads.get(path)
         if handle is None:
             handle = open(path, "rb")  # noqa: SIM115
@@ -332,9 +333,9 @@ class Ledger:
     def _close_read(self, path: Path) -> None:
         handle = self._reads.pop(path, None)
         if handle is not None:
-            handle.close()  # type: ignore[attr-defined]
+            handle.close()
 
-    def _require_handle(self) -> object:
+    def _require_handle(self) -> Any:
         if self._fh is None:
             raise LedgerCorrupt("ledger is closed")
         return self._fh

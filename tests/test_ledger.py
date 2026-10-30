@@ -42,7 +42,9 @@ class LedgerTests(unittest.TestCase):
             ledger = Ledger(path, segment_bytes=100, commit_every=1, retain_bytes=350)
             first = ledger.append("t", b"x" * 60, b"\x04" * 16, 4, from_broker=False)
             for index in range(8):
-                ledger.append("t", b"y" * 60, bytes([index + 1]) + b"\x05" * 15, 5, from_broker=False)
+                ledger.append(
+                    "t", b"y" * 60, bytes([index + 1]) + b"\x05" * 15, 5, from_broker=False
+                )
             with self.assertRaises(OffsetUnavailable):
                 ledger.read(first.offset)
             self.assertGreater(ledger.end_offset, first.next_offset)

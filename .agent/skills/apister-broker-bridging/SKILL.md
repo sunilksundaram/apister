@@ -129,8 +129,8 @@ Check the health of external bridges using `bus.stats()`:
 ```python
 stats = bus.stats()
 print(f"Broker Forwards: {stats.broker_forwards}")  # Sent to external brokers
-print(f"Broker Ingests:  {stats.broker_ingests}")   # Received from external brokers
-print(f"Duplicates:      {stats.duplicates}")       # Dropped by dedup log
-print(f"Reconnects:      {stats.reconnects}")       # Total broker reconnect count
+print(f"Broker Ingests:  {stats.broker_ingests}")  # Received from external brokers
+print(f"Duplicates:      {stats.duplicates}")  # Dropped by dedup log
+print(f"Reconnects:      {stats.reconnects}")  # Total broker reconnect count
 ```
 

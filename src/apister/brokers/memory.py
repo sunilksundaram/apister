@@ -7,7 +7,7 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Sequence
+from collections.abc import Sequence
 
 from apister.brokers.base import Incoming, ack_noop
 from apister.topics import topic_matches

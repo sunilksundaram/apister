@@ -128,10 +128,10 @@ import asyncio
 from pathlib import Path
 from apister import Bus
 
+
 async def main() -> None:
     # 1. Open the bus backed by a local directory
     async with await Bus.open("data/bus") as bus:
-
         # 2. Subscribe using MQTT-style wildcard patterns
         orders_sub = await bus.subscribe("orders/#")
         alerts_sub = await bus.subscribe("orders/+/alert")
@@ -149,6 +149,7 @@ async def main() -> None:
 
         alert = await alerts_sub.get()
         print(f"Alert on [{alert.topic}]: {alert.payload.decode()}")
+
 
 if __name__ == "__main__":
     asyncio.run(main())

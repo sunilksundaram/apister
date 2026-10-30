@@ -28,7 +28,9 @@ class ReconnectTests(unittest.IsolatedAsyncioTestCase):
         broker = MemoryBroker(fail_after=1)
         session = ReconnectingBroker(
             broker,
-            ReconnectPolicy(initial_delay_s=0.001, max_delay_s=0.001, jitter_ratio=0, max_attempts=1),
+            ReconnectPolicy(
+                initial_delay_s=0.001, max_delay_s=0.001, jitter_ratio=0, max_attempts=1
+            ),
             ["news/#"],
             self._ignore,
         )

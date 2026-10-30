@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
+
 from apister import Bus, ReconnectPolicy
 from apister.brokers import RedisBroker
 
@@ -47,4 +48,3 @@ async def main() -> None:
 
 if __name__ == "__main__":
     asyncio.run(main())
-
