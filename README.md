@@ -1,9 +1,10 @@
 # apister
 
+[![PyPI Version](https://img.shields.io/pypi/v/apister.svg?color=blue&logo=pypi&logoColor=white)](https://pypi.org/project/apister/)
+[![Python Version](https://img.shields.io/badge/python->=3.14-3776AB.svg?logo=python&logoColor=white)](https://pypi.org/project/apister/)
+[![Platforms](https://img.shields.io/badge/platforms-Linux%20%7C%20macOS%20%7C%20Windows-2ea44f.svg)](#platform--runtime-support)
 [![CI & Security](https://github.com/sunilksundaram/apister/actions/workflows/ci.yml/badge.svg)](https://github.com/sunilksundaram/apister/actions/workflows/ci.yml)
 [![GitHub Repository](https://img.shields.io/badge/GitHub-sunilksundaram%2Fapister-181717?logo=github)](https://github.com/sunilksundaram/apister)
-[![Python Version](https://img.shields.io/badge/python->=3.14-blue.svg)](https://www.python.org/)
-[![Architecture](https://img.shields.io/badge/architecture-zero--copy%20fan--out-brightgreen.svg)](#architecture)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](https://github.com/sunilksundaram/apister/blob/main/LICENSE)
 
 **apister** is an in-process, high-fan-out asyncio publish-subscribe bus backed by a durable, segmented on-disk ledger.
@@ -78,7 +79,13 @@ Traditional in-process event systems copy messages to each subscriber queue in m
 
 ## Installation
 
-`apister` requires **Python 3.14+**.
+### Platform & Runtime Support
+
+| Dimension | Supported Matrix |
+| :--- | :--- |
+| **PyPI Package** | [`apister`](https://pypi.org/project/apister/) (Pure Python wheel & source distribution) |
+| **Python Version** | Python `>=3.14.7` (CPython 3.14+) |
+| **Operating Systems** | Linux (`x86_64`, `aarch64`), macOS (`Apple Silicon`, `Intel`), Windows (`x64`) |
 
 ### Core (Zero extra dependencies, includes Redis support)
 

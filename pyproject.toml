@@ -6,6 +6,19 @@ readme = "README.md"
 license = "MIT"
 requires-python = ">=3.14.7"
 dependencies = []
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: MacOS",
+    "Operating System :: Microsoft :: Windows",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: System :: Networking",
+    "Framework :: AsyncIO",
+]
 
 [project.scripts]
 apister = "apister.main:main"
@@ -17,6 +30,7 @@ kafka = ["aiokafka>=0.12"]
 [project.urls]
 Homepage = "https://github.com/sunilksundaram/apister"
 Repository = "https://github.com/sunilksundaram/apister"
+PyPI = "https://pypi.org/project/apister/"
 Issues = "https://github.com/sunilksundaram/apister/issues"
 
 [build-system]
