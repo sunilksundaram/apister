@@ -13,6 +13,10 @@ name: Release
 #                            ▼
 # ┌────────────────────────────────────────────────────────┐
 # │ 3. Secure Publishing to PyPI (OIDC / API Token)        │
+# └──────────────────────────┬─────────────────────────────┘
+#                            ▼
+# ┌────────────────────────────────────────────────────────┐
+# │ 4. Create Git Tag & GitHub Release with Built Assets   │
 # └────────────────────────────────────────────────────────┘
 #
 # NOTE: This workflow has NO automated triggers (no push, tag, PR, or release).
@@ -35,12 +39,12 @@ jobs:
   # ============================================================================
   # SECTION 2: DISTRIBUTION PACKAGE BUILD (Wheel & Sdist)
   # ============================================================================
-  # Packages the project into standalone wheels and source distribution archives.
-  # ----------------------------------------------------------------------------
   build:
     name: 2. Build distribution package
     if: github.event.inputs.confirm == 'release'
     runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.pkg-version.outputs.version }}
     steps:
       - name: Checkout source code
         uses: actions/checkout@v4
@@ -52,6 +56,13 @@ jobs:
 
       - name: Set up Python
         run: uv python install
+
+      - name: Extract package version
+        id: pkg-version
+        run: |
+          VERSION=$(python -c "import tomllib; print(tomllib.load(open('pyproject.toml', 'rb'))['project']['version'])")
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "Building apister version: ${VERSION}"
 
       - name: Build package distributions (wheel and sdist)
         run: uv build
@@ -65,9 +76,6 @@ jobs:
   # ============================================================================
   # SECTION 3: PUBLISH TO PYPI
   # ============================================================================
-  # Publishes the built distributions to PyPI via Trusted Publishing (OIDC)
-  # or repository secret token fallback.
-  # ----------------------------------------------------------------------------
   publish-to-pypi:
     name: 3. Publish to PyPI
     needs: [build]
@@ -90,3 +98,34 @@ jobs:
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           password: ${{ secrets.PYPI_API_TOKEN }}
+
+  # ============================================================================
+  # SECTION 4: CREATE GIT TAG & GITHUB RELEASE
+  # ============================================================================
+  github-release:
+    name: 4. Create Git Tag & GitHub Release
+    needs: [build, publish-to-pypi]
+    if: github.event.inputs.confirm == 'release'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write  # Required to create git tag and GitHub release
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download distribution artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: python-package-distributions
+          path: dist/
+
+      - name: Create Git Tag and GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ needs.build.outputs.version }}
+          name: apister v${{ needs.build.outputs.version }}
+          generate_release_notes: true
+          files: |
+            dist/*.whl
+            dist/*.tar.gz
