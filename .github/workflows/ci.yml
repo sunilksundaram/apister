@@ -1,0 +1,161 @@
+name: CI & Security Quality Gate
+
+# ==============================================================================
+# PIPELINE ARCHITECTURE & QUALITY GATES:
+#
+# ┌────────────────────────────────────────────────────────┐
+# │ 1. CVE Security Audit (pip-audit & Bandit SAST)       │
+# └────────────────────────────────────────────────────────┘
+#                            ▲
+# ┌──────────────────────────┴─────────────────────────────┐
+# │ 2. Static Analysis (Ruff Linter/Fmt & Mypy Type Check) │
+# └──────────────────────────┬─────────────────────────────┘
+#                            ▼
+# ┌────────────────────────────────────────────────────────┐
+# │ 3. Unit & Regression Tests (Linux, macOS, and Windows) │
+# └────────────────────────────────────────────────────────┘
+#                            ▼
+# ┌────────────────────────────────────────────────────────┐
+# │ 4. Distribution Build Verification (Wheel & Sdist)    │
+# └────────────────────────────────────────────────────────┘
+# ==============================================================================
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ============================================================================
+  # SECTION 1: CVE SECURITY AUDIT & VULNERABILITY SCANNING
+  # ============================================================================
+  # Audits third-party dependencies for known CVEs via the PyPA / OSV database
+  # and runs Static Application Security Testing (SAST) to detect CWE flaws.
+  # ----------------------------------------------------------------------------
+  cve-security-audit:
+    name: 1. CVE Security Audit (pip-audit & Bandit)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install
+
+      - name: Install dependencies & security scanners
+        run: uv sync --all-extras --group dev
+
+      - name: Scan dependencies for CVEs with pip-audit
+        run: uv run pip-audit
+
+      - name: Run Bandit AST security analysis (SAST)
+        run: uv run bandit -r src -c pyproject.toml
+
+  # ============================================================================
+  # SECTION 2: STATIC ANALYSIS & LINTING
+  # ============================================================================
+  # Enforces code formatting, PEP compliance, and strict static type verification.
+  # ----------------------------------------------------------------------------
+  static-analysis:
+    name: 2. Static Analysis (Ruff & Mypy)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install
+
+      - name: Install static analysis tools
+        run: uv sync --all-extras --group dev
+
+      - name: Run Ruff linter
+        run: uv run ruff check .
+
+      - name: Check code formatting
+        run: uv run ruff format --check .
+
+      - name: Run Mypy static type checker
+        run: uv run mypy src
+
+  # ============================================================================
+  # SECTION 3: UNIT & REGRESSION TESTS (Linux, macOS, and Windows)
+  # ============================================================================
+  # Runs the complete test suite across all major operating systems to verify
+  # cross-platform compatibility, durability, storage cursors, and backpressure.
+  # ----------------------------------------------------------------------------
+  unit-regression-tests:
+    name: 3. Unit & Regression Tests (${{ matrix.os }})
+    needs: [cve-security-audit, static-analysis]
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install
+
+      - name: Install dependencies & dev tooling
+        run: uv sync --all-extras --group dev
+
+      - name: Run Unit & Regression Tests (with Coverage)
+        run: |
+          uv run coverage run -m unittest discover -s tests -p "test_*.py"
+          uv run coverage report -m
+          uv run coverage xml -o coverage.xml
+
+      - name: Upload coverage artifact (Linux only)
+        if: matrix.os == 'ubuntu-latest'
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: coverage.xml
+
+  # ============================================================================
+  # SECTION 4: DISTRIBUTION BUILD VERIFICATION
+  # ============================================================================
+  # Verifies that source distribution (sdist) and binary wheel package cleanly.
+  # ----------------------------------------------------------------------------
+  build-verification:
+    name: 4. Distribution Build Verification
+    needs: [unit-regression-tests]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install
+
+      - name: Build sdist and wheel
+        run: uv build

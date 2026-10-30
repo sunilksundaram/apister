@@ -1,0 +1,92 @@
+name: Release
+
+# ==============================================================================
+# MANUAL RELEASE PIPELINE ARCHITECTURE:
+#
+# ┌────────────────────────────────────────────────────────┐
+# │ 1. Manual Dispatch Trigger & Safety Guard Confirmation │
+# └──────────────────────────┬─────────────────────────────┘
+#                            ▼
+# ┌────────────────────────────────────────────────────────┐
+# │ 2. Distribution Package Build (Wheel & Sdist via uv)   │
+# └──────────────────────────┬─────────────────────────────┘
+#                            ▼
+# ┌────────────────────────────────────────────────────────┐
+# │ 3. Secure Publishing to PyPI (OIDC / API Token)        │
+# └────────────────────────────────────────────────────────┘
+#
+# NOTE: This workflow has NO automated triggers (no push, tag, PR, or release).
+# It will NEVER run automatically and can only be triggered manually via:
+# GitHub Actions -> Release -> Run workflow.
+# ==============================================================================
+
+# ==============================================================================
+# SECTION 1: WORKFLOW TRIGGERS & SAFETY GUARDS
+# ==============================================================================
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Type "release" to confirm publishing to PyPI'
+        required: true
+        default: 'release'
+
+jobs:
+  # ============================================================================
+  # SECTION 2: DISTRIBUTION PACKAGE BUILD (Wheel & Sdist)
+  # ============================================================================
+  # Packages the project into standalone wheels and source distribution archives.
+  # ----------------------------------------------------------------------------
+  build:
+    name: 2. Build distribution package
+    if: github.event.inputs.confirm == 'release'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v4
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install
+
+      - name: Build package distributions (wheel and sdist)
+        run: uv build
+
+      - name: Upload distribution artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-package-distributions
+          path: dist/
+
+  # ============================================================================
+  # SECTION 3: PUBLISH TO PYPI
+  # ============================================================================
+  # Publishes the built distributions to PyPI via Trusted Publishing (OIDC)
+  # or repository secret token fallback.
+  # ----------------------------------------------------------------------------
+  publish-to-pypi:
+    name: 3. Publish to PyPI
+    needs: [build]
+    if: github.event.inputs.confirm == 'release'
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/apister
+    permissions:
+      id-token: write  # Mandatory for PyPI Trusted Publishing (OIDC)
+
+    steps:
+      - name: Download distribution artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: python-package-distributions
+          path: dist/
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          password: ${{ secrets.PYPI_API_TOKEN }}

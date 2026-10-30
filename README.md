@@ -1,5 +1,6 @@
 # apister
 
+[![CI & Security](https://github.com/sunilksundaram/apister/actions/workflows/ci.yml/badge.svg)](https://github.com/sunilksundaram/apister/actions/workflows/ci.yml)
 [![GitHub Repository](https://img.shields.io/badge/GitHub-sunilksundaram%2Fapister-181717?logo=github)](https://github.com/sunilksundaram/apister)
 [![Python Version](https://img.shields.io/badge/python->=3.14-blue.svg)](https://www.python.org/)
 [![Architecture](https://img.shields.io/badge/architecture-zero--copy%20fan--out-brightgreen.svg)](#architecture)
@@ -440,6 +441,30 @@ ApisterError
 
 ---
 
+## Testing & Quality Assurance
+
+`apister` enforces strict quality gates across static analysis, security vulnerability scanning, and testing:
+
+```bash
+# Install development and quality tooling
+uv sync --all-extras --group dev
+
+# 1. Static Analysis & Linting
+uv run ruff check .
+uv run ruff format --check .
+uv run mypy src
+
+# 2. CVE Dependency Scan & Static Security Analysis (SAST)
+uv run pip-audit
+uv run bandit -r src -c pyproject.toml
+
+# 3. Unit & Regression Tests (with coverage report)
+uv run coverage run -m unittest discover -s tests -p "test_*.py"
+uv run coverage report -m
+```
+
+---
+
 ## Running the Built-in Demo
 
 Run the interactive demonstration bundled with `apister`:
@@ -457,6 +482,17 @@ The demo demonstrates:
 2. Zero-copy multi-subscriber fan-out.
 3. Memory broker forwarding with simulated reconnect.
 4. Bus shutdown, reopening, and historical replay from offset 0.
+
+---
+
+## AI Agents & Harness Skills
+
+`apister` includes pre-packaged agent skills in [`.agent/skills`](file:///.agent/skills) designed for coding agents, LLM harnesses (Claude Code, Hermes, Cursor, GitHub Copilot, custom LangChain/CrewAI/AutoGen agents), and developer pair-programming:
+
+- **[`apister-pubsub`](.agent/skills/apister-pubsub/SKILL.md)**: Zero-copy fan-out, persistent ack cursors, inflight message parking, and backpressure policies.
+- **[`apister-broker-bridging`](.agent/skills/apister-broker-bridging/SKILL.md)**: Redis, RabbitMQ, and Kafka adapters, reconnection policies, and loop-free deduplication.
+
+Harness integrations are pre-configured in `.cursorrules` (Cursor) and `.github/copilot-instructions.md` (GitHub Copilot).
 
 ---
 

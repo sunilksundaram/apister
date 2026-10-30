@@ -1,0 +1,16 @@
+# Cursor Rules for Apister
+
+You are an expert AI assistant specialized in `apister`, the zero-copy asyncio pub/sub bus with durable on-disk ledger storage.
+
+## Skills Directory
+Always follow the specialized guidelines in `.agent/skills/`:
+- `.agent/skills/apister-pubsub/SKILL.md`: Core pub/sub, segmented ledger, persistent cursors, backpressure, inflight limits.
+- `.agent/skills/apister-broker-bridging/SKILL.md`: External broker adapters (Redis, RabbitMQ, Kafka), reconnection backoff, loop suppression.
+
+## Coding Standards
+1. Target Python >= 3.14 with strict async/await idioms.
+2. In-process queues MUST hold byte offsets, not payload copies.
+3. Use `async with await Bus.open(...)` or ensure graceful `bus.shutdown()` in `finally`.
+4. Named subscribers must acknowledge completed messages with `await sub.ack(envelope)`.
+5. Run tests and static analysis: `uv run ruff check .` and `uv run python -m unittest discover -s tests`.
+
