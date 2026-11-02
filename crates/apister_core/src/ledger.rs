@@ -247,7 +247,6 @@ impl RustLedger {
         if let Some(w) = self.writer.take() {
             let _ = self.commit();
             if let Ok(file) = w.into_inner() {
-                let _ = file.set_len(self.active_size);
                 let _ = file.sync_data();
             }
             self.mmaps.clear();
@@ -304,19 +303,6 @@ impl RustLedger {
         self.open_active(base)?;
         self.active_size = end.saturating_sub(base);
 
-        let active_file_size = fs::metadata(&self.active_path)
-            .map_err(|e| PyIOError::new_err(e.to_string()))?
-            .len();
-
-        if active_file_size != self.active_size {
-            let file = OpenOptions::new()
-                .write(true)
-                .open(&self.active_path)
-                .map_err(|e| PyIOError::new_err(e.to_string()))?;
-            file.set_len(self.active_size)
-                .map_err(|e| PyIOError::new_err(e.to_string()))?;
-        }
-
         Ok(())
     }
 
@@ -334,11 +320,6 @@ impl RustLedger {
             .map_err(|e| PyIOError::new_err(e.to_string()))?
             .len();
 
-        // Sparse contiguous pre-allocation: if brand-new segment, pre-allocate disk blocks
-        if size == 0 && self.segment_bytes > 0 {
-            let _ = file.set_len(self.segment_bytes);
-        }
-
         self.active_path = path;
         self.active_base = base;
         self.active_size = size;
@@ -353,8 +334,6 @@ impl RustLedger {
             let file = w
                 .into_inner()
                 .map_err(|e| PyIOError::new_err(e.to_string()))?;
-            // Truncate any unused pre-allocated capacity to exact active size
-            let _ = file.set_len(self.active_size);
             file.sync_data()
                 .map_err(|e| PyIOError::new_err(format!("sync error: {e}")))?;
         }
