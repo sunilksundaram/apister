@@ -13,7 +13,7 @@ Traditional in-process event systems copy messages to each subscriber queue in m
 
 `apister` writes every payload **exactly once** to an append-only ledger and delivers lightweight 64-bit byte offsets to subscriber queues. Hot payloads are served directly from an in-memory tail cache, while durable subscribers track acknowledged prefixes with restart persistence, backpressure regulation, and pluggable external broker bridges (Redis, RabbitMQ, Kafka).
 
-> 📖 **Enterprise & Production Guides**: Consult the [Enterprise Production Readiness Guide](docs/enterprise-production-guide.md) for hardware sizing runbooks, Systemd/Docker deployment units, crash-safety audits, and Prometheus telemetry integration. See the [Compression & Storage Optimization Guide](docs/compression-and-storage-optimization-guide.md) for deep dives into Zstandard dictionary training, zero-recompression streaming, and filesystem vs application compression trade-offs.
+> 📖 **Guides & Documentation**: Consult the [Installation, Configuration & Tuning Guide](docs/installation-and-configuration-guide.md) for smart defaults, full parameter reference, and workload recipes. See the [Enterprise Production Readiness Guide](docs/enterprise-production-guide.md) for Systemd/Docker deployment units, Prometheus telemetry, and crash-safety audits. Refer to the [Compression & Storage Optimization Guide](docs/compression-and-storage-optimization-guide.md) for Zstandard dictionary training, zero-recompression streaming, and filesystem vs application compression trade-offs.
 
 ---
 

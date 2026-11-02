@@ -163,6 +163,11 @@ class TestDLQAndBus(unittest.IsolatedAsyncioTestCase):
             else:
                 self.assertEqual(stats.backend, "python")
 
+            # Test subscribe with cursor alias
+            cursor_sub = await bus.subscribe("orders/asia", cursor="asia-worker")
+            self.assertEqual(cursor_sub.name, "asia-worker")
+            await bus.unsubscribe(cursor_sub)
+
             # Test DLQ routing
             dlq_sub = await bus.subscribe("orders/eu.dlq")
             env = await bus.publish("orders/eu", b"bad json payload")

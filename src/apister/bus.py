@@ -572,29 +572,33 @@ class Bus:
         queue_size: int | None = None,
         replay_from: int | None = None,
         name: str | None = None,
+        cursor: str | None = None,
         inflight_limit: int | None = None,
     ) -> Subscription:
         """Subscribe to ``pattern``.
 
-        ``replay_from`` is an absolute ledger offset. ``name`` persists an ack
-        cursor under that name. A new name starts at the live tail. ``inflight_limit``
+        ``replay_from`` is an absolute ledger offset. ``name`` or ``cursor`` persists an ack
+        cursor under that name. A new cursor starts at the live tail. ``inflight_limit``
         is how many delivered messages may stay unacked before later ones park.
         """
         if not self._accepting:
             raise BusClosed()
         parse_topic(pattern, pattern=True)
+        if name is not None and cursor is not None and name != cursor:
+            raise ValueError("cannot specify both 'name' and 'cursor' with different values")
+        cursor_name = cursor if cursor is not None else name
         size = self._max_queue_size if queue_size is None else queue_size
         if size < 1:
             raise ValueError("queue_size must be >= 1")
         if replay_from is not None and replay_from < 0:
             raise ValueError("replay_from must be >= 0")
-        if name is not None:
-            _validate_cursor_name(name)
+        if cursor_name is not None:
+            _validate_cursor_name(cursor_name)
         if inflight_limit is not None and inflight_limit < 1:
             raise ValueError("inflight_limit must be >= 1")
         loop = asyncio.get_running_loop()
         future: asyncio.Future[Subscription] = loop.create_future()
-        command = _Subscribe(pattern, size, replay_from, name, inflight_limit, future)
+        command = _Subscribe(pattern, size, replay_from, cursor_name, inflight_limit, future)
         await self._commands.put(command)
         if self._writer.done() and not future.done():
             future.set_exception(BusClosed())
