@@ -182,7 +182,15 @@ impl RustLedger {
         &mut self,
         py: Python<'py>,
         offset: u64,
-    ) -> PyResult<(u64, u64, String, Bound<'py, PyBytes>, Bound<'py, PyBytes>, u64, bool)> {
+    ) -> PyResult<(
+        u64,
+        u64,
+        String,
+        Bound<'py, PyBytes>,
+        Bound<'py, PyBytes>,
+        u64,
+        bool,
+    )> {
         self.read_at(py, offset, self.end_offset)
     }
 
@@ -191,7 +199,17 @@ impl RustLedger {
         py: Python<'py>,
         offset: u64,
         end: Option<u64>,
-    ) -> PyResult<Option<(u64, u64, String, Bound<'py, PyBytes>, Bound<'py, PyBytes>, u64, bool)>> {
+    ) -> PyResult<
+        Option<(
+            u64,
+            u64,
+            String,
+            Bound<'py, PyBytes>,
+            Bound<'py, PyBytes>,
+            u64,
+            bool,
+        )>,
+    > {
         let limit = match end {
             Some(e) => e.min(self.end_offset),
             None => self.end_offset,
@@ -332,7 +350,9 @@ impl RustLedger {
         if let Some(mut w) = self.writer.take() {
             w.flush()
                 .map_err(|e| PyIOError::new_err(format!("flush error: {e}")))?;
-            let file = w.into_inner().map_err(|e| PyIOError::new_err(e.to_string()))?;
+            let file = w
+                .into_inner()
+                .map_err(|e| PyIOError::new_err(e.to_string()))?;
             // Truncate any unused pre-allocated capacity to exact active size
             let _ = file.set_len(self.active_size);
             file.sync_data()
@@ -376,9 +396,20 @@ impl RustLedger {
         py: Python<'py>,
         offset: u64,
         limit: u64,
-    ) -> PyResult<(u64, u64, String, Bound<'py, PyBytes>, Bound<'py, PyBytes>, u64, bool)> {
+    ) -> PyResult<(
+        u64,
+        u64,
+        String,
+        Bound<'py, PyBytes>,
+        Bound<'py, PyBytes>,
+        u64,
+        bool,
+    )> {
         if offset >= limit {
-            return Err(PyValueError::new_err(format!("offset {} unavailable", offset)));
+            return Err(PyValueError::new_err(format!(
+                "offset {} unavailable",
+                offset
+            )));
         }
 
         let (path, local, is_active) = self.locate(offset)?;
@@ -417,7 +448,10 @@ impl RustLedger {
 
             let next_offset = offset + (HEADER_SIZE + body_len) as u64;
             if next_offset > limit {
-                return Err(PyValueError::new_err(format!("offset {} unavailable", offset)));
+                return Err(PyValueError::new_err(format!(
+                    "offset {} unavailable",
+                    offset
+                )));
             }
 
             let topic = String::from_utf8_lossy(&body[..topic_len as usize]).to_string();
@@ -440,8 +474,7 @@ impl RustLedger {
             let file = File::open(&path)
                 .map_err(|e| PyIOError::new_err(format!("open mmap file error: {e}")))?;
             let mmap = unsafe {
-                Mmap::map(&file)
-                    .map_err(|e| PyIOError::new_err(format!("mmap error: {e}")))?
+                Mmap::map(&file).map_err(|e| PyIOError::new_err(format!("mmap error: {e}")))?
             };
             self.mmaps.insert(path.clone(), mmap);
         }
@@ -473,7 +506,10 @@ impl RustLedger {
 
         let next_offset = offset + total_len as u64;
         if next_offset > limit {
-            return Err(PyValueError::new_err(format!("offset {} unavailable", offset)));
+            return Err(PyValueError::new_err(format!(
+                "offset {} unavailable",
+                offset
+            )));
         }
 
         let topic = String::from_utf8_lossy(&body[..topic_len as usize]).to_string();
@@ -511,7 +547,10 @@ impl RustLedger {
             }
         }
 
-        Err(PyValueError::new_err(format!("offset {} unavailable", offset)))
+        Err(PyValueError::new_err(format!(
+            "offset {} unavailable",
+            offset
+        )))
     }
 
     fn sealed_end(&mut self, path: &Path, base: u64) -> PyResult<u64> {
@@ -540,8 +579,8 @@ impl RustLedger {
         }
 
         let mut good = start;
-        let mut file = File::open(path)
-            .map_err(|e| PyIOError::new_err(format!("open walk error: {e}")))?;
+        let mut file =
+            File::open(path).map_err(|e| PyIOError::new_err(format!("open walk error: {e}")))?;
         file.seek(SeekFrom::Start(start))
             .map_err(|e| PyIOError::new_err(format!("seek walk error: {e}")))?;
 
@@ -555,11 +594,11 @@ impl RustLedger {
                 break;
             }
 
-            let (magic, topic_len, _flags, payload_len, _ts, _mid, crc) = match parse_header(&header)
-            {
-                Ok(h) => h,
-                Err(_) => break,
-            };
+            let (magic, topic_len, _flags, payload_len, _ts, _mid, crc) =
+                match parse_header(&header) {
+                    Ok(h) => h,
+                    Err(_) => break,
+                };
 
             if &magic != MAGIC || topic_len > 1024 {
                 break;
@@ -643,9 +682,7 @@ fn base_of(path: &Path) -> PyResult<u64> {
         .map_err(|_| PyValueError::new_err(format!("bad segment name {:?}", path)))
 }
 
-fn parse_header(
-    h: &[u8; HEADER_SIZE],
-) -> PyResult<([u8; 4], u16, u16, u64, u64, [u8; 16], u32)> {
+fn parse_header(h: &[u8; HEADER_SIZE]) -> PyResult<([u8; 4], u16, u16, u64, u64, [u8; 16], u32)> {
     let magic: [u8; 4] = h[0..4].try_into().unwrap();
     let topic_len = u16::from_le_bytes(h[4..6].try_into().unwrap());
     let flags = u16::from_le_bytes(h[6..8].try_into().unwrap());
@@ -653,14 +690,5 @@ fn parse_header(
     let timestamp_ns = u64::from_le_bytes(h[16..24].try_into().unwrap());
     let mid: [u8; 16] = h[24..40].try_into().unwrap();
     let crc = u32::from_le_bytes(h[40..44].try_into().unwrap());
-    Ok((
-        magic,
-        topic_len,
-        flags,
-        payload_len,
-        timestamp_ns,
-        mid,
-        crc,
-    ))
+    Ok((magic, topic_len, flags, payload_len, timestamp_ns, mid, crc))
 }
-

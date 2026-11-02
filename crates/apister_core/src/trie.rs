@@ -37,7 +37,9 @@ fn parse_topic(topic: &str, pattern: bool) -> PyResult<Vec<&str>> {
             continue;
         }
         if part.contains('+') || part.contains('#') {
-            return Err(PyValueError::new_err("wildcards must occupy a whole segment"));
+            return Err(PyValueError::new_err(
+                "wildcards must occupy a whole segment",
+            ));
         }
     }
     Ok(parts)

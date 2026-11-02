@@ -7,10 +7,7 @@ const TRACEPARENT_LEN: usize = 55;
 
 #[pyfunction]
 #[pyo3(signature = (payload, traceparent=None))]
-pub fn rust_inject_trace(
-    payload: &[u8],
-    traceparent: Option<&str>,
-) -> PyResult<Vec<u8>> {
+pub fn rust_inject_trace(payload: &[u8], traceparent: Option<&str>) -> PyResult<Vec<u8>> {
     let mut out = Vec::with_capacity(4 + TRACEPARENT_LEN + payload.len());
     out.extend_from_slice(TRACE_MAGIC);
 
@@ -26,8 +23,20 @@ pub fn rust_inject_trace(
             out.extend_from_slice(tp.as_bytes());
         }
         None => {
-            let trace_id = format!("{:032x}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos());
-            let span_id = format!("{:016x}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() as u64);
+            let trace_id = format!(
+                "{:032x}",
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            );
+            let span_id = format!(
+                "{:016x}",
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos() as u64
+            );
             let tp = format!("00-{}-{}-01", &trace_id[..32], &span_id[..16]);
             out.extend_from_slice(tp.as_bytes());
         }
@@ -52,4 +61,3 @@ pub fn rust_extract_trace<'py>(
         Ok((None, all_bytes))
     }
 }
-
