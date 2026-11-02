@@ -22,9 +22,16 @@ except ImportError:  # pragma: no cover - optional extra
 
 
 class KafkaBroker:
-    def __init__(self, bootstrap_servers: str, *, group_id: str = "apister") -> None:
+    def __init__(
+        self,
+        bootstrap_servers: str,
+        *,
+        group_id: str = "apister",
+        **kafka_options: Any,
+    ) -> None:
         self._servers = bootstrap_servers
         self._group_id = group_id
+        self._options = kafka_options
         self._producer: Any = None
         self._consumer: Any = None
         self._patterns: list[str] = []
@@ -39,6 +46,7 @@ class KafkaBroker:
             bootstrap_servers=self._servers,
             acks="all",
             enable_idempotence=True,
+            **self._options,
         )
         await self._producer.start()
         self._consumer = consumer_cls(
@@ -46,6 +54,7 @@ class KafkaBroker:
             group_id=self._group_id,
             enable_auto_commit=False,
             auto_offset_reset="latest",
+            **self._options,
         )
 
     async def subscribe(self, patterns: Sequence[str]) -> None:

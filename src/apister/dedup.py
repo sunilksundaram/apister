@@ -9,6 +9,7 @@ from __future__ import annotations
 import os
 import threading
 from collections import OrderedDict
+from contextlib import suppress
 from pathlib import Path
 
 _ID_LEN = 16
@@ -20,7 +21,10 @@ class DedupLog:
             raise ValueError("max_ids must be >= 1")
         self._path = path
         self._max = max_ids
-        path.parent.mkdir(parents=True, exist_ok=True)
+        path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        if os.name == "posix":
+            with suppress(OSError):
+                path.parent.chmod(0o700)
         self._fh = open(path, "ab+")  # noqa: SIM115 — lifetime matches the bus
         self._file_lock = threading.Lock()
         self._seen: OrderedDict[bytes, None] = OrderedDict()

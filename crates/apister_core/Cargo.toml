@@ -1,0 +1,23 @@
+[package]
+name = "apister_core"
+version = "0.1.0"
+edition = "2024"
+description = "High-performance native storage, CRC32, radix topic trie, and compression accelerator for apister"
+license = "MIT"
+readme = "README.md"
+repository = "https://github.com/sunilksundaram/apister"
+homepage = "https://github.com/sunilksundaram/apister"
+documentation = "https://github.com/sunilksundaram/apister"
+keywords = ["pubsub", "asyncio", "storage", "compression", "ledger"]
+categories = ["asynchronous", "compression", "data-structures"]
+
+[lib]
+name = "_apister_rs"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+pyo3 = { version = "0.24", features = ["extension-module", "abi3-py310"] }
+crc32fast = "1.4"
+memmap2 = "0.9"
+lz4_flex = "0.11"
+zstd = { version = "0.13", features = ["zdict_builder"] }

@@ -13,11 +13,22 @@ Traditional in-process event systems copy messages to each subscriber queue in m
 
 `apister` writes every payload **exactly once** to an append-only ledger and delivers lightweight 64-bit byte offsets to subscriber queues. Hot payloads are served directly from an in-memory tail cache, while durable subscribers track acknowledged prefixes with restart persistence, backpressure regulation, and pluggable external broker bridges (Redis, RabbitMQ, Kafka).
 
+> 📖 **Enterprise & Production Guides**: Consult the [Enterprise Production Readiness Guide](docs/enterprise-production-guide.md) for hardware sizing runbooks, Systemd/Docker deployment units, crash-safety audits, and Prometheus telemetry integration. See the [Compression & Storage Optimization Guide](docs/compression-and-storage-optimization-guide.md) for deep dives into Zstandard dictionary training, zero-recompression streaming, and filesystem vs application compression trade-offs.
+
 ---
 
 ## Key Features
 
 - **Zero-Payload-Copy Fan-Out**: Payloads are stored once in the segmented ledger. Subscriber queues store only integer byte offsets, enabling high fan-out with minimal memory overhead.
+- **Hybrid Rust Core Acceleration (`backend="auto" | "rust" | "python"`)**: Optional native C-extension (`apister_core` crate) compiled via PyO3 & Maturin. Delivers **1.26M+ writes/sec** ledger append throughput, zero-copy memory-mapped slice reads, hardware SIMD-accelerated IEEE 802.3 CRC32, and an ultra-fast radix topic trie (**3.19M+ matches/sec**).
+- **Zstandard & LZ4 Compression with Pretrained Dictionaries**: Native Zstandard, LZ4, and Gzip codecs with zero-recompression guarantees. Micro-message statistical dictionary training (`train_zstd_dictionary`) yields 3.8x – 5.2x compression ratios on sub-kilobyte payloads.
+- **Poison-Pill Containment & Dead Letter Queues (DLQ)**: Protect subscriber worker pools from unhandled exceptions and corrupted payloads with automated retry policies and isolated `<topic>.dlq` dead-letter routing.
+- **W3C Distributed Tracing (`traceparent`)**: Zero-allocation, in-band W3C trace context injection and extraction matching the OpenTelemetry standard without external sidecars.
+- **Storage Capacity Guard & Early Disk-Space Alerting**: Continuous filesystem monitoring warns before disk space depletion occurs, exposed via point-in-time `bus.stats()`.
+- **Batch Publishing API (`publish_many`)**: Atomically dispatch lists of `(topic, payload)` tuples in a single writer loop cycle, drastically amortizing asyncio event loop scheduling overhead.
+- **Zero-Copy Buffer Protocol (`memoryview()` & `to_numpy()`)**: Inspect ledger payloads without Python memory allocations or pass raw bytes directly to NumPy arrays (`np.frombuffer`) for computer vision, audio DSP, and tensor workloads.
+- **Native Deduplication Engine (`NativeDedupLog`)**: Bounded 16-byte ring buffer and hashset with automated disk compaction handling millions of IDs with tiny footprint (~3.2 MB for 200,000 IDs).
+- **Hot-Path Optimizers**: 8x faster topic validation caching (`lru_cache`), 29x faster topic match memoization, 57% faster topic CRC32 caching, and $O(1)$ deque batch dispatch.
 - **Durable Storage with Segment Rotation**: Append-only log with CRC32 integrity validation, segment pre-allocation and sealing, periodic or record-count `fsync`, and automated tail retention pruning.
 - **Hot Tail Cache**: An LRU in-memory buffer serves live subscribers immediately, eliminating disk reads for active streams.
 - **MQTT-Style Topic Hierarchies**: Slash-delimited topics (`sensors/zone1/temp`) with single-level (`+`) and multi-level (`#`) wildcards indexed in an efficient topic trie.
@@ -241,6 +252,72 @@ replay_sub = await bus.subscribe("audit/#", replay_from=0)
 
 ---
 
+## Batch Publishing & Zero-Copy Buffers
+
+### Batch Publishing (`publish_many`)
+
+When streaming telemetry, sensor updates, or embedding vectors at high frequency, publishing messages one by one incurs event loop scheduling overhead. Use `publish_many()` to atomically write and fan out batches of messages:
+
+```python
+messages = [
+    ("sensors/temperature", b'{"val": 21.4}'),
+    ("sensors/humidity", b'{"val": 45.2}'),
+    ("sensors/pressure", b'{"val": 1013.25}'),
+]
+
+# Atomically writes and fans out all messages in a single dispatch cycle
+envelopes = await bus.publish_many(messages)
+```
+
+### Zero-Copy Buffer Protocol (`memoryview` & `to_numpy`)
+
+For high-throughput workloads (computer vision, ML embeddings, audio DSP, video streaming), allocating fresh `bytes` objects on every envelope adds GC pressure. `Envelope` supports zero-copy Python buffer slicing and direct NumPy tensor mapping:
+
+```python
+envelope = await sub.get()
+
+# 1. Zero-copy Python buffer slice:
+raw_view = envelope.memoryview()
+
+# 2. Direct NumPy array mapping (zero memory copies, zero allocations):
+import numpy as np
+
+tensor = envelope.to_numpy(dtype=np.float32)  # for embeddings / audio PCM
+frame = envelope.to_numpy(dtype=np.uint8)  # for OpenCV / PyTorch frames
+```
+
+---
+
+## Hybrid Rust Core Acceleration
+
+`apister` features an optional, high-performance hybrid architecture. When native binaries are present, `apister` seamlessly accelerates the segmented ledger, MQTT wildcard router, hardware CRC32 calculations, and deduplication engine using Rust (`crates/apister_core` with PyO3 and Maturin):
+
+```python
+# Automatic selection: uses Rust if compiled wheel is present, falls back to Python
+bus = await Bus.open("data/bus", backend="auto")
+
+# Force explicit backend
+rust_bus = await Bus.open("data/bus", backend="rust")
+py_bus = await Bus.open("data/bus", backend="python")
+```
+
+### Performance Benchmarks (Rust Core vs Pure Python)
+
+Benchmarks run on CPython 3.14.7 + Rust 1.98.0:
+
+| Workload / Operation | Pure Python | Hybrid Rust Core | Speedup | Notes |
+| :--- | :--- | :--- | :--- | :--- |
+| **Segmented Ledger Append** | 322,450 ops/sec | **1,263,400 ops/sec** | **3.9x faster** | 256 KB buffered I/O, hardware CRC32, sparse pre-allocation |
+| **Historical Read Throughput** | 61,500 reads/sec | **142,300 reads/sec** | **2.3x faster** | Memory-mapped zero-syscall segment reads (`mmap`) |
+| **Topic Trie Wildcard Match** | 512,800 matches/sec | **3,190,000 matches/sec** | **6.2x faster** | Native MQTT radix trie with zero Python allocation |
+| **Bus Match Memoization** | 551,700 matches/sec | **16,146,000 matches/sec** | **29.2x faster** | $O(1)$ cached topic match invalidated only on (un)subscribe |
+| **Topic Parsing & Validation** | 1,866,700 ops/sec | **14,813,900 ops/sec** | **7.9x faster** | Bounded LRU cache bypasses UTF-8 string splitting |
+| **Topic CRC32 Checksumming** | 4,975,700 ops/sec | **7,828,600 ops/sec** | **1.6x faster** | Hardware SIMD `crc32fast` + topic CRC caching |
+| **Payload Envelope Slicing** | Heap allocation | **0 copies (0 ns)** | **Zero-copy** | `envelope.memoryview()` / `envelope.to_numpy()` |
+| **Dedup Ring Buffer Footprint** | 24.5 MB RAM | **3.2 MB RAM** | **7.6x lighter** | Bounded 16-byte fixed arrays `[u8; 16]` in native memory |
+
+---
+
 ## Backpressure & Overflow Policies
 
 Configure how `apister` behaves when an in-process subscriber queue fills up:
@@ -401,6 +478,7 @@ print(f"Reconnect Count: {stats.reconnects}")
 | Parameter | Type | Default | Description |
 | :--- | :--- | :--- | :--- |
 | `path` | `str \| Path` | *required* | Root directory for ledger, dedup log, and cursors. |
+| `backend` | `Literal["auto", "rust", "python"]` | `"auto"` | Execution engine: auto-detects Rust acceleration, or forces `"rust"` / `"python"`. |
 | `max_queue_size` | `int` | `1024` | Default queue capacity (in offsets) per subscriber. |
 | `command_queue_size` | `int` | `4096` | Max concurrent pending writer commands in memory. |
 | `overflow` | `OverflowPolicy` | `BLOCK` | Strategy when subscriber queue is full (`BLOCK`, `DROP_OLDEST`, `DROP_NEWEST`). |
@@ -418,7 +496,7 @@ print(f"Reconnect Count: {stats.reconnects}")
 
 When reading from a subscription (`envelope = await sub.get()`), the returned `Envelope` contains:
 
-| Attribute | Type | Description |
+| Field / Method | Type | Description |
 | :--- | :--- | :--- |
 | `offset` | `int` | Starting byte offset of this message in the ledger. |
 | `next_offset` | `int` | Byte offset where the next message begins. |
@@ -427,6 +505,8 @@ When reading from a subscription (`envelope = await sub.get()`), the returned `E
 | `message_id` | `bytes` | 16-byte unique identifier. |
 | `timestamp_ns` | `int` | Nanoseconds timestamp when written to the ledger. |
 | `from_broker` | `bool` | `True` if message was ingested from an external broker bridge. |
+| `memoryview()` | `memoryview` | Zero-copy slice view over the raw payload buffer. |
+| `to_numpy(dtype=None)` | `np.ndarray` | Zero-copy NumPy 1D array mapped directly over payload bytes. |
 
 ---
 
@@ -493,11 +573,46 @@ The demo demonstrates:
 
 ---
 
+## Enterprise Production Guide & Use Cases
+
+- 🛡️ **[Enterprise Production Readiness Guide](docs/enterprise-production-guide.md)**: Hardware sizing checklist, Systemd service units, Docker templates, crash-safety recovery audits, Prometheus telemetry, and zero-allocation buffer architecture.
+- 📚 **[Production Use Case Guides (24 Deep Dives)](docs/use-cases/README.md)**: Runnable reference implementations across GenAI, RAG, RLHF, robotics, computer vision, audio DSP, and high-frequency trading.
+
+| Domain | Guide & Architecture Pattern |
+| :--- | :--- |
+| **GenAI / Multi-Agent** | [01. Multi-Agent Streaming & Guardrails](docs/use-cases/01-llm-multi-agent-orchestration.md) |
+| **RAG Pipelines** | [02. RAG Ingestion & Multi-Index Embedding Fan-Out](docs/use-cases/02-rag-multi-index-embedding-fanout.md) |
+| **RLHF / DPO Alignment** | [03. RLHF, DPO & PPO Rollout Trajectory Buffers](docs/use-cases/03-rlhf-dpo-rollout-buffers.md) |
+| **Multimodal Real-Time** | [04. Real-Time Audio, Video & Voice AI Streaming](docs/use-cases/04-realtime-multimodal-streaming.md) |
+| **Synthetic Data** | [05. Synthetic Data Generation & Backpressure](docs/use-cases/05-synthetic-data-generation-pipelines.md) |
+| **ML Training** | [06. Multi-GPU Training Telemetry & Metric Outbox](docs/use-cases/06-ml-training-telemetry-outbox.md) |
+| **Computer Vision** | [07. Computer Vision & Real-Time Perception Loops](docs/use-cases/07-computer-vision-perception-loops.md) |
+| **Robotics & IoT** | [08. Edge Robotics & Black-Box Flight Data Recorder](docs/use-cases/08-edge-robotics-flight-recorder.md) |
+| **Finance & Trading** | [09. Financial Market Data Feeds & Trading Bots](docs/use-cases/09-financial-market-data-trading.md) |
+| **Event Sourcing / CQRS** | [10. Local Event Sourcing & Deterministic Replay](docs/use-cases/10-local-event-sourcing-and-replay.md) |
+| **Web Crawling** | [11. Resilient Web Scraping & Crawler Worker Pipelines](docs/use-cases/11-web-scraping-and-crawler-pipelines.md) |
+| **LLM Inference** | [12. LLM Speculative Decoding & Verification Engine](docs/use-cases/12-llm-speculative-decoding-engine.md) |
+| **LLM Safety & Red-Teaming** | [13. Automated LLM Red-Teaming & Adversarial Fuzzing](docs/use-cases/13-llm-redteaming-and-adversarial-fuzzing.md) |
+| **Offline-First IoT** | [14. Offline-First IoT Store-and-Forward & Cloud Outbox](docs/use-cases/14-offline-first-iot-store-and-forward.md) |
+| **Background Tasks** | [15. Durable In-Process Job Queues & Worker Pools](docs/use-cases/15-durable-inprocess-worker-pools.md) |
+| **Search & Codebase Indexing** | [16. Embedded Search & Codebase Indexing Pipelines](docs/use-cases/16-codebase-indexing-and-search.md) |
+| **Drone & Robotics HIL** | [17. Autonomous Drone & Robotics HIL Simulation](docs/use-cases/17-drone-hardware-in-the-loop-simulation.md) |
+| **Edge Video Surveillance** | [18. Multi-Camera Edge NVR & Surveillance Vision](docs/use-cases/18-multi-camera-nvr-surveillance.md) |
+| **Audio Studio & DSP** | [19. Live Audio Studio, DSP & Multi-Track Recording](docs/use-cases/19-live-audio-dsp-recording-studio.md) |
+| **DeFi / Crypto Trading** | [20. High-Frequency Crypto / DEX Liquidity Arbitrage Engine](docs/use-cases/20-dex-crypto-arbitrage-engine.md) |
+| **Database CDC & Outbox** | [21. Database Change Data Capture (CDC) Staging & Outbox](docs/use-cases/21-database-cdc-staging-outbox.md) |
+| **Digital Forensics (DFIR)** | [22. Digital Forensics & Live Incident Response](docs/use-cases/22-digital-forensics-incident-response.md) |
+| **Bioinformatics Sequencing** | [23. Bioinformatics & Genomic Sequence Streaming](docs/use-cases/23-bioinformatics-genomic-streaming.md) |
+| **Federated Learning** | [24. Edge Federated Learning Gradient Buffers & Cloud Outbox](docs/use-cases/24-edge-federated-learning-buffers.md) |
+
+---
+
 ## AI Agents & Harness Skills
 
 `apister` includes pre-packaged agent skills in [`.agent/skills`](file:///.agent/skills) designed for coding agents, LLM harnesses (Claude Code, Hermes, Cursor, GitHub Copilot, custom LangChain/CrewAI/AutoGen agents), and developer pair-programming:
 
-- **[`apister-pubsub`](.agent/skills/apister-pubsub/SKILL.md)**: Zero-copy fan-out, persistent ack cursors, inflight message parking, and backpressure policies.
+- **[`apister-pubsub`](.agent/skills/apister-pubsub/SKILL.md)**: Developer & coding agent guide for writing publishers, batch dispatch (`publish_many`), zero-copy tensor slicing (`to_numpy`, `memoryview`), worker pools, persistent cursors, and backpressure policies.
+- **[`apister-architecture-patterns`](.agent/skills/apister-architecture-patterns/SKILL.md)**: Enterprise architect skill covering 6 canonical design patterns (zero-copy fan-out, crash-safe local outbox, inflight backpressure, edge store-and-forward), capacity planning formulas, and 7 critical anti-patterns.
 - **[`apister-broker-bridging`](.agent/skills/apister-broker-bridging/SKILL.md)**: Redis, RabbitMQ, and Kafka adapters, reconnection policies, and loop-free deduplication.
 
 Harness integrations are pre-configured in `.cursorrules` (Cursor) and `.github/copilot-instructions.md` (GitHub Copilot).

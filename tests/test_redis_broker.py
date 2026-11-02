@@ -38,8 +38,8 @@ class RedisProtocolTests(unittest.IsolatedAsyncioTestCase):
                 writer.close()
 
         server = await asyncio.start_server(handle, "127.0.0.1", 0)
-        sockets = server.sockets or []
-        port = sockets[0].getsockname()[1]
+        assert server.sockets is not None
+        port = server.sockets[0].getsockname()[1]
         broker = RedisBroker(f"redis://127.0.0.1:{port}/0")
         try:
             await broker.connect()
@@ -49,6 +49,41 @@ class RedisProtocolTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(incoming.topic, "news/sports")
             self.assertEqual(incoming.payload, b"hello")
             self.assertEqual(published, [(b"news/sports", b"hello")])
+        finally:
+            await broker.close()
+            server.close()
+            await server.wait_closed()
+
+    async def test_acl_authentication_with_username_and_password(self) -> None:
+        auth_commands: list[list[bytes]] = []
+
+        async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+            conn = _Resp(reader, writer)
+            try:
+                while True:
+                    message = await conn.read()
+                    if not isinstance(message, list) or not message:
+                        break
+                    kind = message[0]
+                    if kind == b"AUTH":
+                        auth_commands.append(message)
+                        writer.write(b"+OK\r\n")
+                        await writer.drain()
+                        continue
+            except asyncio.CancelledError, ConnectionError, OSError, EOFError:
+                return
+            finally:
+                writer.close()
+
+        server = await asyncio.start_server(handle, "127.0.0.1", 0)
+        assert server.sockets is not None
+        port = server.sockets[0].getsockname()[1]
+        broker = RedisBroker(f"redis://alice:secret123@127.0.0.1:{port}/0")
+        try:
+            await broker.connect()
+            self.assertEqual(len(auth_commands), 2)  # Pub and Sub connections
+            self.assertEqual(auth_commands[0], [b"AUTH", b"alice", b"secret123"])
+            self.assertEqual(auth_commands[1], [b"AUTH", b"alice", b"secret123"])
         finally:
             await broker.close()
             server.close()

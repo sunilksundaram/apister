@@ -17,6 +17,7 @@ from tempfile import TemporaryDirectory
 
 from apister.bus import Bus
 from apister.dedup import DedupLog
+from apister.framing import decode_frame, encode_frame
 from apister.topics import topic_matches
 from apister.types import (
     OverflowPolicy,
@@ -145,7 +146,7 @@ class DedupAndTopicRegressionTests(unittest.TestCase):
             # Older IDs (> 10 items ago) may have been evicted
             # Most recent 10 IDs must still be deduplicated
             for mid in ids[-10:]:
-                self.assertFalse(reopened.remember(mid), f"ID {mid} should be remembered")
+                self.assertFalse(reopened.remember(mid), f"ID {mid!r} should be remembered")
 
             # Brand new ID must be accepted
             self.assertTrue(reopened.remember(b"brand-new-id-012"))
@@ -158,6 +159,65 @@ class DedupAndTopicRegressionTests(unittest.TestCase):
         self.assertTrue(topic_matches("orders/#", "orders"))
         self.assertTrue(topic_matches("orders/#", "orders/create"))
         self.assertTrue(topic_matches("orders/#", "orders/create/priority"))
+
+    def test_regression_framing_integrity_and_tampering(self) -> None:
+        """Framing must validate magic bytes and CRC32, rejecting corrupted headers."""
+        inst = b"1234567890123456"
+        mid = b"abcdefghijklmnop"
+        payload = b"hello-world"
+
+        framed = encode_frame(inst, mid, payload)
+        self.assertIsNotNone(framed)
+
+        # Valid frame decodes properly
+        decoded = decode_frame(framed)
+        self.assertIsNotNone(decoded)
+        assert decoded is not None
+        self.assertEqual(decoded[0], inst)
+        self.assertEqual(decoded[1], mid)
+        self.assertEqual(decoded[2], payload)
+
+        # Tampered CRC byte must be rejected (returns None)
+        tampered_crc = bytearray(framed)
+        tampered_crc[35] ^= 0xFF
+        self.assertIsNone(decode_frame(bytes(tampered_crc)))
+
+        # Tampered instance ID must fail CRC check
+        tampered_id = bytearray(framed)
+        tampered_id[5] ^= 0x01
+        self.assertIsNone(decode_frame(bytes(tampered_id)))
+
+        # Legacy V1 unframed/v1 framed compatibility
+        v1_framed = bytes((1,)) + inst + mid + payload
+        decoded_v1 = decode_frame(v1_framed)
+        self.assertIsNotNone(decoded_v1)
+        assert decoded_v1 is not None
+        self.assertEqual(decoded_v1[0], inst)
+        self.assertEqual(decoded_v1[2], payload)
+
+
+class SecurityAndSanitizationRegressionTests(unittest.IsolatedAsyncioTestCase):
+    async def test_regression_cursor_name_traversal_and_reserved_names_rejected(self) -> None:
+        """Cursor names containing relative traversal or reserved names must be rejected."""
+        with TemporaryDirectory() as tmp_dir:
+            bus = await Bus.open(Path(tmp_dir), commit_every=1)
+            try:
+                # Relative and traversal names
+                for bad_name in ["..", ".", "...", ".hidden", "trailing.", "foo..bar"]:
+                    with self.assertRaises(ValueError, msg=f"Should reject {bad_name}"):
+                        await bus.subscribe("topic", name=bad_name)
+
+                # Windows reserved system names
+                for reserved in ["con", "prn", "aux", "nul", "com1", "lpt1"]:
+                    with self.assertRaises(ValueError, msg=f"Should reject {reserved}"):
+                        await bus.subscribe("topic", name=reserved)
+
+                # Valid cursor names must succeed
+                sub = await bus.subscribe("topic", name="valid-worker_01.prod")
+                self.assertEqual(sub.name, "valid-worker_01.prod")
+                await bus.unsubscribe(sub)
+            finally:
+                await bus.shutdown()
 
 
 if __name__ == "__main__":

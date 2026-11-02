@@ -49,6 +49,7 @@ class BusTests(unittest.IsolatedAsyncioTestCase):
         await self.bus.publish("news/item", b"z" * 1000)
         offset = subscription.queue.get_nowait()
         self.assertIsInstance(offset, int)
+        assert isinstance(offset, int)
         envelope = await self.bus._materialize(offset)
         self.assertEqual(envelope.payload, b"z" * 1000)
 

@@ -12,19 +12,22 @@ import asyncio
 import logging
 import os
 import re
+import shutil
 import threading
 import time
+import zlib
 from collections import OrderedDict, deque
 from collections.abc import Sequence
 from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Self
+from typing import Any, Literal, Self
 
 from apister.brokers.base import BrokerAdapter, Incoming
 from apister.dedup import DedupLog
 from apister.framing import decode_frame, encode_frame
 from apister.ledger import Ledger
+from apister.native import HAS_RUST_CORE, NativeDedupLog, NativeLedger, NativeTopicTrie
 from apister.reconnect import ReconnectingBroker
 from apister.topics import TopicTrie, parse_topic, topic_matches
 from apister.types import (
@@ -45,6 +48,59 @@ from apister.types import (
 logger = logging.getLogger("apister.bus")
 
 _CURSOR_NAME = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
+_RESERVED_NAMES = {
+    "con",
+    "prn",
+    "aux",
+    "nul",
+    "com1",
+    "com2",
+    "com3",
+    "com4",
+    "com5",
+    "com6",
+    "com7",
+    "com8",
+    "com9",
+    "lpt1",
+    "lpt2",
+    "lpt3",
+    "lpt4",
+    "lpt5",
+    "lpt6",
+    "lpt7",
+    "lpt8",
+    "lpt9",
+}
+
+_TOPIC_CRC_CACHE: dict[str, int] = {}
+
+
+def _get_topic_crc(topic: str) -> int:
+    crc = _TOPIC_CRC_CACHE.get(topic)
+    if crc is None:
+        crc = zlib.crc32(topic.encode("utf-8"))
+        if len(_TOPIC_CRC_CACHE) < 4096:
+            _TOPIC_CRC_CACHE[topic] = crc
+    return crc
+
+
+def _secure_mkdir(path: Path) -> None:
+    path.mkdir(parents=True, exist_ok=True, mode=0o700)
+    if os.name == "posix":
+        with suppress(OSError):
+            path.chmod(0o700)
+
+
+def _validate_cursor_name(name: str) -> None:
+    if _CURSOR_NAME.fullmatch(name) is None:
+        raise ValueError("cursor name must be 1-64 characters of A-Z, a-z, 0-9, ., _, -")
+    if name in {".", ".."} or name.startswith(".") or name.endswith(".") or ".." in name:
+        raise ValueError(
+            f"invalid cursor name {name!r}: cannot be or contain relative path components"
+        )
+    if name.lower() in _RESERVED_NAMES:
+        raise ValueError(f"invalid cursor name {name!r}: reserved system name")
 
 
 @dataclass(slots=True)
@@ -57,6 +113,7 @@ class _Publish:
     deadline: float | None = None
     claimed: bool = False
     cancelled: bool = False
+    crc: int | None = None
 
 
 @dataclass(slots=True)
@@ -181,6 +238,9 @@ class Subscription:
         if item is SHUTDOWN or isinstance(item, _ShutdownSentinel):
             self._closed = True
             raise SubscriptionClosed()
+        cached = self._bus._cache.get(item)
+        if cached is not None:
+            return cached
         return await self._bus._materialize(item)
 
     async def ack(self, envelope: Envelope) -> None:
@@ -226,6 +286,7 @@ class Bus:
         self,
         directory: Path,
         *,
+        backend: Literal["auto", "rust", "python"] = "auto",
         max_queue_size: int,
         command_queue_size: int,
         overflow: OverflowPolicy,
@@ -238,7 +299,14 @@ class Bus:
         shutdown_timeout_s: float,
         batch_max: int,
         fsync_interval_s: float,
+        disk_warning_threshold: float = 0.95,
     ) -> None:
+        if backend not in ("auto", "rust", "python"):
+            raise ValueError("backend must be 'auto', 'rust', or 'python'")
+        if backend == "rust" and not HAS_RUST_CORE:
+            raise RuntimeError(
+                "backend='rust' requested, but Rust core '_apister_rs' is not installed"
+            )
         if max_queue_size < 1 or command_queue_size < 1:
             raise ValueError("queue sizes must be >= 1")
         if max_payload_bytes < 1:
@@ -247,7 +315,15 @@ class Bus:
             raise ValueError("batch_max must be >= 1")
         if fsync_interval_s <= 0:
             raise ValueError("fsync_interval_s must be > 0")
+        if not 0.0 < disk_warning_threshold <= 1.0:
+            raise ValueError("disk_warning_threshold must be between 0.0 and 1.0")
         self._dir = directory
+        self._backend = backend
+        self._disk_warning_threshold = disk_warning_threshold
+        self._last_disk_check = 0.0
+        _secure_mkdir(directory)
+        _secure_mkdir(directory / "cursors")
+        _secure_mkdir(directory / "bridges")
         self._max_queue_size = max_queue_size
         self._overflow = overflow
         self._max_payload_bytes = max_payload_bytes
@@ -257,15 +333,30 @@ class Bus:
         self._commit_every = commit_every
         self._accepting = True
         self._draining = False
-        self._trie = TopicTrie()
         self._subscribers: set[Subscription] = set()
-        self._ledger = Ledger(
-            directory / "ledger",
-            segment_bytes=segment_bytes,
-            commit_every=commit_every,
-            retain_bytes=retain_bytes,
-        )
-        self._dedup = DedupLog(directory / "dedup", max_ids=dedup_ids)
+
+        use_rust = (backend == "rust") or (backend == "auto" and HAS_RUST_CORE)
+        self._use_rust = use_rust
+        if use_rust:
+            self._trie: TopicTrie | NativeTopicTrie = NativeTopicTrie()
+            self._ledger: Ledger | NativeLedger = NativeLedger(
+                directory / "ledger",
+                segment_bytes=segment_bytes,
+                commit_every=commit_every,
+                retain_bytes=retain_bytes,
+            )
+            self._dedup: DedupLog | NativeDedupLog = NativeDedupLog(
+                directory / "dedup", max_ids=dedup_ids
+            )
+        else:
+            self._trie = TopicTrie()
+            self._ledger = Ledger(
+                directory / "ledger",
+                segment_bytes=segment_bytes,
+                commit_every=commit_every,
+                retain_bytes=retain_bytes,
+            )
+            self._dedup = DedupLog(directory / "dedup", max_ids=dedup_ids)
         self._cache = _TailCache(tail_cache_bytes)
         self._instance_id = _load_instance_id(directory)
         self._commands: asyncio.Queue[_Command] = asyncio.Queue(maxsize=command_queue_size)
@@ -277,7 +368,8 @@ class Bus:
         self._cursors_frozen = False
         self._cursor_lock = threading.Lock()
         self._space = asyncio.Event()
-        self._held: list[_Publish] = []
+        self._match_cache: dict[str, list[Subscription]] = {}
+        self._held: deque[_Publish] = deque()
         self._writer = asyncio.create_task(self._run_writer(), name="apister-writer")
         self._fsync_task = asyncio.create_task(self._fsync_loop(), name="apister-fsync")
         self._bridges: list[_Bridge] = []
@@ -298,6 +390,7 @@ class Bus:
         cls,
         path: str | Path,
         *,
+        backend: Literal["auto", "rust", "python"] = "auto",
         max_queue_size: int = 1024,
         command_queue_size: int = 4096,
         overflow: OverflowPolicy = OverflowPolicy.BLOCK,
@@ -310,6 +403,7 @@ class Bus:
         shutdown_timeout_s: float = 5.0,
         batch_max: int = 128,
         fsync_interval_s: float = 0.01,
+        disk_warning_threshold: float = 0.95,
     ) -> Bus:
         """Create the ledger directory, recover sealed segments, and start the writer.
 
@@ -318,6 +412,7 @@ class Bus:
         """
         return cls(
             Path(path),
+            backend=backend,
             max_queue_size=max_queue_size,
             command_queue_size=command_queue_size,
             overflow=overflow,
@@ -330,6 +425,7 @@ class Bus:
             shutdown_timeout_s=shutdown_timeout_s,
             batch_max=batch_max,
             fsync_interval_s=fsync_interval_s,
+            disk_warning_threshold=disk_warning_threshold,
         )
 
     async def __aenter__(self) -> Self:
@@ -338,8 +434,21 @@ class Bus:
     async def __aexit__(self, *_exc: object) -> None:
         await self.shutdown()
 
+    @property
+    def is_healthy(self) -> bool:
+        """Return True if the bus is active and its writer loop is healthy."""
+        return self._accepting and not self._writer.done()
+
+    @property
+    def is_closed(self) -> bool:
+        """Return True if the bus has stopped accepting commands or is shut down."""
+        return not self._accepting or self._writer.done()
+
     def stats(self) -> BusStats:
         reconnects = sum(bridge.session.reconnects for bridge in self._bridges)
+        total, used, free = shutil.disk_usage(self._dir)
+        usage_pct = (used / total) if total > 0 else 0.0
+        warning = usage_pct >= self._disk_warning_threshold
         return BusStats(
             published=self.published,
             delivered=self.delivered,
@@ -352,6 +461,10 @@ class Bus:
             ledger_bytes=self._ledger.bytes_retained,
             inflight=sum(len(sub._outstanding) for sub in self._subscribers),
             parked=sum(len(sub._pending) for sub in self._subscribers),
+            backend="rust" if self._use_rust else "python",
+            disk_free_bytes=free,
+            disk_usage_percent=usage_pct,
+            disk_warning=warning,
         )
 
     async def publish(
@@ -382,6 +495,7 @@ class Bus:
         loop = asyncio.get_running_loop()
         future: asyncio.Future[Envelope | None] = loop.create_future()
         deadline = None if timeout is None else time.monotonic() + timeout
+        crc = zlib.crc32(body, _get_topic_crc(topic)) & 0xFFFFFFFF
         command = _Publish(
             topic=topic,
             payload=body,
@@ -389,11 +503,67 @@ class Bus:
             message_id=message_id if message_id is not None else _new_message_id(),
             future=future,
             deadline=deadline,
+            crc=crc,
         )
         await self._commands.put(command)
         if self._writer.done() and not future.done():
             future.set_exception(BusClosed())
         return await future
+
+    async def publish_many(
+        self,
+        messages: Sequence[tuple[str, bytes | bytearray | memoryview]],
+        *,
+        from_broker: bool = False,
+        timeout: float | None = None,
+    ) -> list[Envelope | None]:
+        """Append a batch of messages and fan them out.
+
+        Returns a list of envelopes (or ``None`` for duplicates), matching
+        the input order.
+        """
+        if not self._accepting:
+            raise BusClosed()
+        if not messages:
+            return []
+        if timeout is not None and timeout < 0:
+            raise ValueError("timeout must be >= 0")
+
+        loop = asyncio.get_running_loop()
+        commands: list[_Publish] = []
+        futures: list[asyncio.Future[Envelope | None]] = []
+        deadline = None if timeout is None else time.monotonic() + timeout
+
+        for topic, payload in messages:
+            parse_topic(topic, pattern=False)
+            body = _as_bytes(payload)
+            if len(body) > self._max_payload_bytes:
+                raise PayloadTooLarge(
+                    f"payload is {len(body)} bytes; limit is {self._max_payload_bytes}"
+                )
+            future: asyncio.Future[Envelope | None] = loop.create_future()
+            futures.append(future)
+            crc = zlib.crc32(body, _get_topic_crc(topic)) & 0xFFFFFFFF
+            cmd = _Publish(
+                topic=topic,
+                payload=body,
+                from_broker=from_broker,
+                message_id=_new_message_id(),
+                future=future,
+                deadline=deadline,
+                crc=crc,
+            )
+            commands.append(cmd)
+
+        for cmd in commands:
+            await self._commands.put(cmd)
+
+        if self._writer.done():
+            for f in futures:
+                if not f.done():
+                    f.set_exception(BusClosed())
+
+        return await asyncio.gather(*futures)
 
     async def subscribe(
         self,
@@ -418,8 +588,8 @@ class Bus:
             raise ValueError("queue_size must be >= 1")
         if replay_from is not None and replay_from < 0:
             raise ValueError("replay_from must be >= 0")
-        if name is not None and _CURSOR_NAME.fullmatch(name) is None:
-            raise ValueError("cursor name must be 1-64 characters of A-Z, a-z, 0-9, ., _, -")
+        if name is not None:
+            _validate_cursor_name(name)
         if inflight_limit is not None and inflight_limit < 1:
             raise ValueError("inflight_limit must be >= 1")
         loop = asyncio.get_running_loop()
@@ -589,11 +759,10 @@ class Bus:
         return False
 
     async def _run_publish_batch(self, batch: list[_Publish]) -> None:
-        self._held = batch
+        self._held.extend(batch)
         while self._held:
-            command = self._held.pop(0)
+            command = self._held.popleft()
             await self._dispatch_one(command)
-        self._held = []
         self._service_fills()
 
     async def _dispatch_one(self, command: _Command) -> bool:
@@ -664,10 +833,18 @@ class Bus:
             except TimeoutError:
                 continue
 
+    def _match(self, topic: str) -> list[Subscription]:
+        res = self._match_cache.get(topic)
+        if res is None:
+            res = self._trie.match(topic)
+            if len(self._match_cache) < 4096:
+                self._match_cache[topic] = res
+        return res
+
     def _can_admit(self, topic: str) -> bool:
         if self._overflow is not OverflowPolicy.BLOCK:
             return True
-        for subscription in self._trie.match(topic):
+        for subscription in self._match(topic):
             if subscription._closed or self._must_park(subscription):
                 continue
             if subscription.queue.full():
@@ -699,6 +876,7 @@ class Bus:
             time.time_ns(),
             from_broker=command.from_broker,
             commit=False,
+            crc=command.crc,
         )
         self._ledger.commit_if_due()
         self._cache.put(envelope)
@@ -709,7 +887,7 @@ class Bus:
         self._appended.set()
         targets = [
             sub
-            for sub in self._trie.match(command.topic)
+            for sub in self._match(command.topic)
             if envelope.offset >= sub.min_live_offset and not sub._closed
         ]
         for subscription in targets:
@@ -790,7 +968,14 @@ class Bus:
         end = self._ledger.end_offset
         subscription.min_live_offset = end
         if command.name is not None:
-            path = self._dir / "cursors" / command.name
+            path = (self._dir / "cursors" / command.name).resolve()
+            cursors_dir = (self._dir / "cursors").resolve()
+            if path.parent != cursors_dir:
+                _fail(
+                    command.future,
+                    ValueError(f"cursor {command.name!r} resolves outside cursors directory"),
+                )
+                return
             subscription._cursor_path = path
             stored = self._stored_cursor(path, command.name)
             if command.replay_from is not None:
@@ -808,12 +993,14 @@ class Bus:
         elif command.replay_from is not None:
             subscription.cursor = command.replay_from
             subscription._replay_pos = command.replay_from
+        self._match_cache.clear()
         self._trie.add(command.pattern, subscription)
         self._subscribers.add(subscription)
         self._fill(subscription)
         _ok(command.future, subscription)
 
     def _on_unsubscribe(self, command: _Unsubscribe) -> None:
+        self._match_cache.clear()
         subscription = command.subscription
         self._retire_cursor(subscription)
         self._trie.discard(subscription.pattern, subscription)
@@ -897,12 +1084,16 @@ class Bus:
         subscription._fill_scheduled = False
         if subscription._closed:
             return
+        replayed = 0
         while True:
             limit = subscription.inflight_limit
             if limit is not None and len(subscription._outstanding) >= limit:
                 return
             replay_at = subscription._replay_pos
             if replay_at is not None and replay_at < subscription.min_live_offset:
+                if replayed >= 64:
+                    self._nudge(subscription)
+                    return
                 record = self._ledger.read_next(replay_at, subscription.min_live_offset)
                 if record is None:
                     subscription._replay_pos = None
@@ -913,6 +1104,7 @@ class Bus:
                 if not self._offer(subscription, record.offset, record.next_offset):
                     return
                 subscription._replay_pos = record.next_offset
+                replayed += 1
                 continue
             subscription._replay_pos = None
             if not subscription._pending:
@@ -946,6 +1138,19 @@ class Bus:
                 if self._draining or self._cursors_frozen:
                     return
                 await self._fsync_once()
+                now = time.monotonic()
+                if now - self._last_disk_check >= 5.0:
+                    self._last_disk_check = now
+                    with suppress(OSError):
+                        total, used, free = shutil.disk_usage(self._dir)
+                        pct = (used / total) if total > 0 else 0.0
+                        if pct >= self._disk_warning_threshold:
+                            logger.warning(
+                                "Disk usage threshold exceeded on %s: %.1f%% used (free: %d bytes)",
+                                self._dir,
+                                pct * 100,
+                                free,
+                            )
         except asyncio.CancelledError:
             raise
 
@@ -1199,7 +1404,7 @@ def _new_message_id() -> bytes:
 
 
 def _load_instance_id(directory: Path) -> bytes:
-    directory.mkdir(parents=True, exist_ok=True)
+    _secure_mkdir(directory)
     path = directory / "instance-id"
     if path.exists():
         data = path.read_bytes()
@@ -1207,6 +1412,9 @@ def _load_instance_id(directory: Path) -> bytes:
             return data
     data = os.urandom(16)
     path.write_bytes(data)
+    if os.name == "posix":
+        with suppress(OSError):
+            path.chmod(0o600)
     return data
 
 
@@ -1225,10 +1433,13 @@ def _read_cursor_optional(path: Path) -> int | None:
 
 
 def _write_cursor(path: Path, offset: int) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
+    _secure_mkdir(path.parent)
     temporary = path.parent / f"{path.name}.tmp"
     with temporary.open("w", encoding="utf-8") as handle:
         handle.write(str(offset))
         handle.flush()
         os.fsync(handle.fileno())
+    if os.name == "posix":
+        with suppress(OSError):
+            temporary.chmod(0o600)
     os.replace(temporary, path)

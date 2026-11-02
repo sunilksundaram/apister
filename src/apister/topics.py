@@ -8,6 +8,7 @@ Patterns follow MQTT rules, with ``/`` as the separator:
 
 from __future__ import annotations
 
+import functools
 from typing import TYPE_CHECKING
 
 from apister.types import InvalidTopic
@@ -18,9 +19,9 @@ if TYPE_CHECKING:
 _MAX_TOPIC_BYTES = 1024
 
 
-def parse_topic(topic: str, *, pattern: bool) -> tuple[str, ...]:
-    """Split a topic or pattern into segments, rejecting malformed input."""
-    if not isinstance(topic, str) or not topic:
+@functools.lru_cache(maxsize=8192)
+def _parse_topic_cached(topic: str, pattern: bool) -> tuple[str, ...]:
+    if not topic:
         raise InvalidTopic("topic must be a non-empty string")
     if len(topic.encode("utf-8")) > _MAX_TOPIC_BYTES:
         raise InvalidTopic(f"topic exceeds {_MAX_TOPIC_BYTES} bytes")
@@ -40,6 +41,13 @@ def parse_topic(topic: str, *, pattern: bool) -> tuple[str, ...]:
         if "+" in part or "#" in part:
             raise InvalidTopic("wildcards must occupy a whole segment")
     return parts
+
+
+def parse_topic(topic: str, *, pattern: bool) -> tuple[str, ...]:
+    """Split a topic or pattern into segments, rejecting malformed input."""
+    if not isinstance(topic, str):
+        raise InvalidTopic("topic must be a non-empty string")
+    return _parse_topic_cached(topic, pattern)
 
 
 def topic_matches(pattern: str, topic: str) -> bool:

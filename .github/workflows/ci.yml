@@ -8,7 +8,7 @@ name: CI & Security Quality Gate
 # └────────────────────────────────────────────────────────┘
 #                            ▲
 # ┌──────────────────────────┴─────────────────────────────┐
-# │ 2. Static Analysis (Ruff Linter/Fmt & Mypy Type Check) │
+# │ 2. Static Analysis (Ruff, Mypy, Clippy, Cargo Fmt)     │
 # └──────────────────────────┬─────────────────────────────┘
 #                            ▼
 # ┌────────────────────────────────────────────────────────┐
@@ -16,7 +16,11 @@ name: CI & Security Quality Gate
 # └────────────────────────────────────────────────────────┘
 #                            ▼
 # ┌────────────────────────────────────────────────────────┐
-# │ 4. Distribution Build Verification (Wheel & Sdist)     │
+# │ 4. Distribution Build Verification (uv & Cargo Package)│
+# └────────────────────────────────────────────────────────┘
+#                            ▼
+# ┌────────────────────────────────────────────────────────┐
+# │ 5. Native Rust Wheel Matrix (Linux, macOS, Windows)    │
 # └────────────────────────────────────────────────────────┘
 # ==============================================================================
 
@@ -35,9 +39,6 @@ jobs:
   # ============================================================================
   # SECTION 1: CVE SECURITY AUDIT & VULNERABILITY SCANNING
   # ============================================================================
-  # Audits third-party dependencies for known CVEs via the PyPA / OSV database
-  # and runs Static Application Security Testing (SAST) to detect CWE flaws.
-  # ----------------------------------------------------------------------------
   cve-security-audit:
     name: 1. CVE Security Audit (pip-audit & Bandit)
     runs-on: ubuntu-latest
@@ -63,16 +64,25 @@ jobs:
         run: uv run bandit -r src -c pyproject.toml
 
   # ============================================================================
-  # SECTION 2: STATIC ANALYSIS & LINTING
+  # SECTION 2: STATIC ANALYSIS & LINTING (Python & Rust)
   # ============================================================================
-  # Enforces code formatting, PEP compliance, and strict static type verification.
-  # ----------------------------------------------------------------------------
   static-analysis:
-    name: 2. Static Analysis (Ruff & Mypy)
+    name: 2. Static Analysis (Python & Rust)
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      - name: Set up Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+
+      - name: Check Rust formatting (cargo fmt)
+        run: cargo fmt --manifest-path crates/apister_core/Cargo.toml --check
+
+      - name: Run Rust linter (cargo clippy)
+        run: cargo clippy --manifest-path crates/apister_core/Cargo.toml --all-targets -- -D warnings
 
       - name: Set up uv
         uses: astral-sh/setup-uv@v5
@@ -88,18 +98,15 @@ jobs:
       - name: Run Ruff linter
         run: uv run ruff check .
 
-      - name: Check code formatting
+      - name: Check Python code formatting
         run: uv run ruff format --check .
 
       - name: Run Mypy static type checker
-        run: uv run mypy src
+        run: uv run mypy src tests
 
   # ============================================================================
   # SECTION 3: UNIT & REGRESSION TESTS (Linux, macOS, and Windows)
   # ============================================================================
-  # Runs the complete test suite across all major operating systems to verify
-  # cross-platform compatibility, durability, storage cursors, and backpressure.
-  # ----------------------------------------------------------------------------
   unit-regression-tests:
     name: 3. Unit & Regression Tests (${{ matrix.os }})
     needs: [cve-security-audit, static-analysis]
@@ -120,8 +127,14 @@ jobs:
       - name: Set up Python
         run: uv python install
 
+      - name: Set up Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
       - name: Install dependencies & dev tooling
         run: uv sync --all-extras --group dev
+
+      - name: Build and install Rust native accelerator
+        run: uv run maturin develop -m crates/apister_core/Cargo.toml --release
 
       - name: Run Unit & Regression Tests (with Coverage)
         run: |
@@ -137,10 +150,8 @@ jobs:
           path: coverage.xml
 
   # ============================================================================
-  # SECTION 4: DISTRIBUTION BUILD VERIFICATION
+  # SECTION 4: DISTRIBUTION BUILD VERIFICATION (Python & Cargo)
   # ============================================================================
-  # Verifies that source distribution (sdist) and binary wheel package cleanly.
-  # ----------------------------------------------------------------------------
   build-verification:
     name: 4. Distribution Build Verification
     needs: [unit-regression-tests]
@@ -148,6 +159,12 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      - name: Set up Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Verify Rust crate packaging (cargo package)
+        run: cargo package --manifest-path crates/apister_core/Cargo.toml --no-verify
 
       - name: Set up uv
         uses: astral-sh/setup-uv@v5
@@ -159,3 +176,38 @@ jobs:
 
       - name: Build sdist and wheel
         run: uv build
+
+  # ============================================================================
+  # SECTION 5: NATIVE RUST WHEEL MATRIX BUILD VERIFICATION
+  # ============================================================================
+  native-wheels:
+    name: 5. Native Wheels (${{ matrix.os }} - ${{ matrix.target }})
+    needs: [build-verification]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            manylinux: auto
+          - os: macos-latest
+            target: aarch64-apple-darwin
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Build native wheel with maturin-action
+        uses: PyO3/maturin-action@v1
+        with:
+          target: ${{ matrix.target }}
+          args: --release --manifest-path crates/apister_core/Cargo.toml
+          sdist: false
+          manylinux: ${{ matrix.manylinux || 'off' }}

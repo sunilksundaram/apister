@@ -4,8 +4,10 @@ You are an expert AI assistant specialized in `apister`, the zero-copy asyncio p
 
 ## Skills Directory
 Always follow the specialized guidelines in `.agent/skills/`:
-- `.agent/skills/apister-pubsub/SKILL.md`: Core pub/sub, segmented ledger, persistent cursors, backpressure, inflight limits.
+- `.agent/skills/apister-pubsub/SKILL.md`: Core pub/sub, batch publishing (`publish_many`), zero-copy buffer protocol (`to_numpy`, `memoryview`), segmented ledger, persistent cursors, backpressure, inflight limits.
+- `.agent/skills/apister-architecture-patterns/SKILL.md`: Enterprise architecture patterns, capacity planning, disk retention sizing, and anti-pattern prevention.
 - `.agent/skills/apister-broker-bridging/SKILL.md`: External broker adapters (Redis, RabbitMQ, Kafka), reconnection backoff, loop suppression.
+- `.agent/skills/apister-compression-and-resilience/SKILL.md`: Zstandard dictionary training, zero-recompression pipelines, DLQ, W3C distributed tracing, and early disk space guarding.
 
 ## Coding Standards
 1. Target Python >= 3.14 with strict async/await idioms.

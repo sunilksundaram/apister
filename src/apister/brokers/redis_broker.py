@@ -7,6 +7,7 @@ Install nothing extra. ``rediss://`` enables TLS.
 from __future__ import annotations
 
 import asyncio
+import ssl as ssl_lib
 from collections.abc import Sequence
 from typing import Any
 from urllib.parse import unquote, urlsplit
@@ -16,13 +17,20 @@ from apister.brokers.patterns import to_redis_globs
 
 
 class RedisBroker:
-    def __init__(self, url: str = "redis://127.0.0.1:6379/0") -> None:
+    def __init__(
+        self,
+        url: str = "redis://127.0.0.1:6379/0",
+        *,
+        ssl_context: ssl_lib.SSLContext | None = None,
+    ) -> None:
         parts = urlsplit(url)
         if parts.scheme not in {"redis", "rediss"}:
             raise ValueError("Redis url must start with redis:// or rediss://")
         self._host = parts.hostname or "127.0.0.1"
         self._port = parts.port or 6379
         self._ssl = parts.scheme == "rediss"
+        self._ssl_context = ssl_context
+        self._username = unquote(parts.username) if parts.username else None
         self._password = unquote(parts.password) if parts.password else None
         self._db = int(parts.path.lstrip("/") or "0")
         self._pub: _Resp | None = None
@@ -33,8 +41,15 @@ class RedisBroker:
         return "redis"
 
     async def connect(self) -> None:
-        self._pub = await _Resp.connect(self._host, self._port, self._ssl, self._password, self._db)
-        self._sub = await _Resp.connect(self._host, self._port, self._ssl, self._password, self._db)
+        ssl_param: bool | ssl_lib.SSLContext = (
+            self._ssl_context if self._ssl_context is not None else self._ssl
+        )
+        self._pub = await _Resp.connect(
+            self._host, self._port, ssl_param, self._username, self._password, self._db
+        )
+        self._sub = await _Resp.connect(
+            self._host, self._port, ssl_param, self._username, self._password, self._db
+        )
 
     async def subscribe(self, patterns: Sequence[str]) -> None:
         exact: list[str] = []
@@ -96,7 +111,8 @@ class _Resp:
         cls,
         host: str,
         port: int,
-        ssl: bool,
+        ssl: bool | ssl_lib.SSLContext,
+        username: str | None,
         password: str | None,
         db: int,
     ) -> _Resp:
@@ -106,7 +122,10 @@ class _Resp:
         )
         conn = cls(reader, writer)
         if password is not None:
-            await conn.command("AUTH", password)
+            if username is not None:
+                await conn.command("AUTH", username, password)
+            else:
+                await conn.command("AUTH", password)
         if db:
             await conn.command("SELECT", str(db))
         return conn

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import enum
 from dataclasses import dataclass
-from typing import Never
+from typing import Any, Never
 
 
 class ApisterError(Exception):
@@ -83,6 +83,18 @@ class Envelope:
     timestamp_ns: int
     from_broker: bool
 
+    def memoryview(self) -> memoryview:
+        """Return a zero-copy memoryview slice of the payload buffer."""
+        return memoryview(self.payload)
+
+    def to_numpy(self, dtype: Any = None) -> Any:
+        """Convert payload to a zero-copy NumPy array if NumPy is installed."""
+        try:
+            import numpy as np  # type: ignore[import-not-found]
+        except ImportError as exc:
+            raise RuntimeError("numpy is required to call to_numpy()") from exc
+        return np.frombuffer(self.payload, dtype=dtype)
+
 
 @dataclass(frozen=True, slots=True)
 class BusStats:
@@ -99,6 +111,10 @@ class BusStats:
     ledger_bytes: int
     inflight: int
     parked: int
+    backend: str = "python"
+    disk_free_bytes: int = 0
+    disk_usage_percent: float = 0.0
+    disk_warning: bool = False
 
 
 @dataclass(frozen=True, slots=True)

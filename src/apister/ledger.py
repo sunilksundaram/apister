@@ -7,10 +7,13 @@ active segment is scanned on open, from the last committed checkpoint.
 
 from __future__ import annotations
 
+import bisect
+import mmap
 import os
 import struct
 import threading
 import zlib
+from contextlib import suppress
 from pathlib import Path
 from typing import Any
 
@@ -45,9 +48,15 @@ class Ledger:
         self._commit_every = commit_every
         self._retain_bytes = retain_bytes
         self._io = threading.Lock()
-        self._dir.mkdir(parents=True, exist_ok=True)
+        self._read_locks: dict[Path, threading.Lock] = {}
+        self._dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+        if os.name == "posix":
+            with suppress(OSError):
+                self._dir.chmod(0o700)
         self._segments: list[tuple[int, int, Path]] = []
+        self._segment_bases: list[int] = []
         self._reads: dict[Path, Any] = {}
+        self._mmaps: dict[Path, mmap.mmap] = {}
         self._end_offset = 0
         self._active_base = 0
         self._active_size = 0
@@ -77,6 +86,7 @@ class Ledger:
         *,
         from_broker: bool,
         commit: bool | None = None,
+        crc: int | None = None,
     ) -> Envelope:
         """Append one record.
 
@@ -85,8 +95,9 @@ class Ledger:
         """
         topic_b = topic.encode("utf-8")
         flags = _FROM_BROKER if from_broker else 0
-        crc = zlib.crc32(topic_b)
-        crc = zlib.crc32(payload, crc) & 0xFFFFFFFF
+        if crc is None:
+            crc = zlib.crc32(topic_b)
+            crc = zlib.crc32(payload, crc) & 0xFFFFFFFF
         header = _HEADER.pack(
             _MAGIC,
             len(topic_b),
@@ -110,7 +121,6 @@ class Ledger:
             self._since_commit += 1
             if commit is True or (commit is None and self._since_commit >= self._commit_every):
                 self._commit()
-            self._enforce_retention()
             return Envelope(
                 offset=offset,
                 next_offset=offset + size,
@@ -123,15 +133,16 @@ class Ledger:
 
     def read(self, offset: int) -> Envelope:
         with self._io:
-            return self._read_at(offset, self._end_offset)
+            end = self._end_offset
+        return self._read_at(offset, end)
 
     def read_next(self, offset: int, end: int | None = None) -> Envelope | None:
         """Return the record at ``offset`` if it is strictly before ``end``."""
         with self._io:
             limit = self._end_offset if end is None else min(end, self._end_offset)
-            if offset >= limit:
-                return None
-            return self._read_at(offset, limit)
+        if offset >= limit:
+            return None
+        return self._read_at(offset, limit)
 
     @property
     def uncommitted(self) -> int:
@@ -155,9 +166,13 @@ class Ledger:
             self._commit()
             self._require_handle().close()
             self._fh = None
+            for mm in self._mmaps.values():
+                mm.close()
+            self._mmaps.clear()
             for handle in self._reads.values():
                 handle.close()  # type: ignore[attr-defined]
             self._reads.clear()
+            self._read_locks.clear()
 
     def _commit(self) -> None:
         handle = self._require_handle()
@@ -165,6 +180,7 @@ class Ledger:
         os.fsync(handle.fileno())
         self._write_ckpt(self._end_offset)
         self._since_commit = 0
+        self._enforce_retention()
 
     def _recover(self) -> None:
         paths = sorted(self._dir.glob("*.seg"))
@@ -179,6 +195,7 @@ class Ledger:
                 raise LedgerCorrupt(f"segment gap at {path.name}")
             end = self._sealed_end(path, base)
             self._segments.append((base, end, path))
+            self._segment_bases.append(base)
             expected = end
         active = paths[-1]
         base = _base_of(active)
@@ -258,7 +275,7 @@ class Ledger:
         path = self._dir / f"{base:016x}.seg"
         self._active_path = path
         self._active_base = base
-        self._fh = open(path, "ab+")  # noqa: SIM115
+        self._fh = open(path, "ab+", buffering=256 * 1024)  # noqa: SIM115
         self._active_size = path.stat().st_size
 
     def _rotate(self) -> None:
@@ -270,8 +287,10 @@ class Ledger:
         handle.close()
         self._close_read(self._active_path)
         self._segments.append((self._active_base, end, self._active_path))
+        self._segment_bases.append(self._active_base)
         self._open_active(end)
         self._active_size = 0
+        self._enforce_retention()
 
     def _enforce_retention(self) -> None:
         if self._retain_bytes is None:
@@ -279,6 +298,8 @@ class Ledger:
         horizon = self._end_offset - self._retain_bytes
         while self._segments and self._segments[0][1] <= horizon:
             _base, _end, path = self._segments.pop(0)
+            if self._segment_bases:
+                self._segment_bases.pop(0)
             self._close_read(path)
             path.unlink(missing_ok=True)
             path.with_suffix(".end").unlink(missing_ok=True)
@@ -286,42 +307,115 @@ class Ledger:
     def _read_at(self, offset: int, limit: int) -> Envelope:
         if offset < 0 or offset >= limit:
             raise OffsetUnavailable(offset)
-        path, local = self._locate(offset)
-        handle = self._reader(path)
-        handle.seek(local)  # type: ignore[attr-defined]
-        header = handle.read(_HEADER_SIZE)  # type: ignore[attr-defined]
-        if len(header) < _HEADER_SIZE:
-            raise LedgerCorrupt(f"short header at {offset}")
-        magic, topic_len, flags, payload_len, timestamp_ns, message_id, crc = _HEADER.unpack(header)
-        if magic != _MAGIC:
-            raise LedgerCorrupt(f"bad magic at {offset}")
-        body = handle.read(topic_len + payload_len)  # type: ignore[attr-defined]
-        if len(body) < topic_len + payload_len:
-            raise LedgerCorrupt(f"short body at {offset}")
-        if (zlib.crc32(body) & 0xFFFFFFFF) != crc:
-            raise LedgerCorrupt(f"crc mismatch at {offset}")
-        next_offset = offset + _HEADER_SIZE + topic_len + payload_len
-        if next_offset > limit:
+        with self._io:
+            path, local = self._locate(offset)
+            is_sealed = path != self._active_path
+            if is_sealed:
+                mm = self._mmap(path)
+                lock = None
+                handle = None
+            else:
+                mm = None
+                if self._fh is not None:
+                    self._fh.flush()
+                handle = self._reader(path)
+                lock = self._reader_lock(path)
+
+        if is_sealed and mm is not None:
+            try:
+                header = mm[local : local + _HEADER_SIZE]
+            except ValueError, IndexError:
+                raise OffsetUnavailable(offset) from None
+            if len(header) < _HEADER_SIZE:
+                raise LedgerCorrupt(f"short header at {offset}")
+            magic, topic_len, flags, payload_len, timestamp_ns, message_id, crc = _HEADER.unpack(
+                header
+            )
+            if magic != _MAGIC:
+                raise LedgerCorrupt(f"bad magic at {offset}")
+            body_len = topic_len + payload_len
+            total_len = _HEADER_SIZE + body_len
+            full = mm[local : local + total_len]
+            if len(full) < total_len:
+                raise LedgerCorrupt(f"short body at {offset}")
+            body = full[_HEADER_SIZE:]
+            if (zlib.crc32(body) & 0xFFFFFFFF) != crc:
+                raise LedgerCorrupt(f"crc mismatch at {offset}")
+            next_offset = offset + total_len
+            if next_offset > limit:
+                raise OffsetUnavailable(offset)
+            topic = body[:topic_len].decode("utf-8")
+            payload = bytes(body[topic_len:])
+            return Envelope(
+                offset=offset,
+                next_offset=next_offset,
+                topic=topic,
+                payload=payload,
+                message_id=bytes(message_id),
+                timestamp_ns=timestamp_ns,
+                from_broker=bool(flags & _FROM_BROKER),
+            )
+
+        if lock is None or handle is None:
             raise OffsetUnavailable(offset)
-        topic = body[:topic_len].decode("utf-8")
-        payload = bytes(body[topic_len:])
-        return Envelope(
-            offset=offset,
-            next_offset=next_offset,
-            topic=topic,
-            payload=payload,
-            message_id=bytes(message_id),
-            timestamp_ns=timestamp_ns,
-            from_broker=bool(flags & _FROM_BROKER),
-        )
+        with lock:
+            try:
+                handle.seek(local)  # type: ignore[attr-defined]
+            except ValueError, OSError:
+                raise OffsetUnavailable(offset) from None
+            header = handle.read(_HEADER_SIZE)  # type: ignore[attr-defined]
+            if len(header) < _HEADER_SIZE:
+                raise LedgerCorrupt(f"short header at {offset}")
+            magic, topic_len, flags, payload_len, timestamp_ns, message_id, crc = _HEADER.unpack(
+                header
+            )
+            if magic != _MAGIC:
+                raise LedgerCorrupt(f"bad magic at {offset}")
+            body = handle.read(topic_len + payload_len)  # type: ignore[attr-defined]
+            if len(body) < topic_len + payload_len:
+                raise LedgerCorrupt(f"short body at {offset}")
+            if (zlib.crc32(body) & 0xFFFFFFFF) != crc:
+                raise LedgerCorrupt(f"crc mismatch at {offset}")
+            next_offset = offset + _HEADER_SIZE + topic_len + payload_len
+            if next_offset > limit:
+                raise OffsetUnavailable(offset)
+            topic = body[:topic_len].decode("utf-8")
+            payload = bytes(body[topic_len:])
+            return Envelope(
+                offset=offset,
+                next_offset=next_offset,
+                topic=topic,
+                payload=payload,
+                message_id=bytes(message_id),
+                timestamp_ns=timestamp_ns,
+                from_broker=bool(flags & _FROM_BROKER),
+            )
 
     def _locate(self, offset: int) -> tuple[Path, int]:
-        for base, end, path in self._segments:
-            if base <= offset < end:
-                return path, offset - base
+        # Fast path: active segment (O(1))
         if self._active_base <= offset < self._end_offset:
             return self._active_path, offset - self._active_base
+
+        # Binary search over sealed segments (O(log N))
+        if self._segments:
+            idx = bisect.bisect_right(self._segment_bases, offset) - 1
+            if 0 <= idx < len(self._segments):
+                base, end, path = self._segments[idx]
+                if base <= offset < end:
+                    return path, offset - base
+
         raise OffsetUnavailable(offset)
+
+    def _mmap(self, path: Path) -> mmap.mmap | None:
+        mm = self._mmaps.get(path)
+        if mm is None:
+            handle = self._reader(path)
+            try:
+                mm = mmap.mmap(handle.fileno(), 0, access=mmap.ACCESS_READ)
+                self._mmaps[path] = mm
+            except ValueError, OSError:
+                return None
+        return mm
 
     def _reader(self, path: Path) -> Any:
         handle = self._reads.get(path)
@@ -330,9 +424,25 @@ class Ledger:
             self._reads[path] = handle
         return handle
 
+    def _reader_lock(self, path: Path) -> threading.Lock:
+        lock = self._read_locks.get(path)
+        if lock is None:
+            lock = threading.Lock()
+            self._read_locks[path] = lock
+        return lock
+
     def _close_read(self, path: Path) -> None:
+        mm = self._mmaps.pop(path, None)
+        if mm is not None:
+            with suppress(OSError):
+                mm.close()
         handle = self._reads.pop(path, None)
-        if handle is not None:
+        lock = self._read_locks.pop(path, None)
+        if lock is not None:
+            with lock:
+                if handle is not None:
+                    handle.close()
+        elif handle is not None:
             handle.close()
 
     def _require_handle(self) -> Any:

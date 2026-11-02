@@ -31,3 +31,10 @@ htmlcov/
 *.swo
 .DS_Store
 Thumbs.db
+
+# Rust target directories & binary extensions
+crates/**/target/
+target/
+*.pyd
+*.so
+*.dylib
