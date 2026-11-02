@@ -14,7 +14,7 @@ from typing import Any
 from apister.types import Envelope, OffsetUnavailable
 
 try:
-    import _apister_rs  # type: ignore[import-untyped]
+    import _apister_rs  # type: ignore[import-untyped,import-not-found]
 
     HAS_RUST_CORE = True
 except ImportError:
