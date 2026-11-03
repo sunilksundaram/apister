@@ -1,23 +1,28 @@
 name: Release
 
 # ==============================================================================
-# RELEASE PIPELINE ARCHITECTURE:
+# ATOMIC MULTI-REGISTRY RELEASE PIPELINE:
 #
 # Triggered exclusively when CI & Security Quality Gate succeeds on a version tag (v*).
-# Reuses all pre-built artifacts, unit test verifications, and security audits
+# Reuses all pre-built artifacts, multi-OS test verifications, and security audits
 # from ci.yml without performing ANY redundant builds or tests.
 #
+# Sequential All-or-Nothing Guarantee:
+# 1. Publishes apister_core to Crates.io first.
+# 2. Publishes apister and native wheels to PyPI iff Crates.io succeeds.
+# 3. Creates GitHub Release iff both registries succeed.
+#
 # ┌────────────────────────────────────────────────────────┐
-# │ 1. Triggered from CI on tags: v* (workflow_call)       │
+# │ Triggered from CI on tags: v* (workflow_call)          │
 # └──────────────────────────┬─────────────────────────────┘
 #                            ▼
-#              ┌─────────────┴─────────────┐
-#              ▼                           ▼
-# ┌────────────────────────┐  ┌────────────────────────┐
-# │ 1. Publish to PyPI     │  │ 2. Publish to Crates.io│
-# │    (Pre-built wheels)  │  │    (apister_core crate)│
-# └────────────┬───────────┘  └────────────┬───────────┘
-#              └─────────────┬─────────────┘
+# ┌────────────────────────────────────────────────────────┐
+# │ 1. Publish apister_core to Crates.io                   │
+# └──────────────────────────┬─────────────────────────────┘
+#                            ▼
+# ┌────────────────────────────────────────────────────────┐
+# │ 2. Publish apister & Native Wheels to PyPI             │
+# └──────────────────────────┬─────────────────────────────┘
 #                            ▼
 # ┌────────────────────────────────────────────────────────┐
 # │ 3. Create GitHub Release with Pre-Built Assets         │
@@ -40,11 +45,44 @@ on:
 
 jobs:
   # ============================================================================
-  # SECTION 1: PUBLISH PYTHON PACKAGES TO PYPI
+  # SECTION 1: PUBLISH RUST CRATE TO CRATES.IO
+  # ============================================================================
+  publish-to-crates-io:
+    name: 1. Publish apister_core to Crates.io
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v4
+
+      - name: Set up Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Check Crates.io authentication token
+        id: check-token
+        env:
+          CARGO_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN || secrets.CARGO_TOKEN }}
+        run: |
+          if [ -z "$CARGO_TOKEN" ]; then
+            echo "has_token=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::Neither CARGO_REGISTRY_TOKEN nor CARGO_TOKEN is set in repository secrets. Skipping crates.io publish."
+          else
+            echo "has_token=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Publish apister_core to crates.io
+        if: steps.check-token.outputs.has_token == 'true'
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN || secrets.CARGO_TOKEN }}
+        run: cargo publish --manifest-path crates/apister_core/Cargo.toml --token "${CARGO_REGISTRY_TOKEN}"
+
+  # ============================================================================
+  # SECTION 2: PUBLISH PYTHON PACKAGES TO PYPI
   # Reuses pre-built wheels and sdist from ci.yml artifacts
+  # Runs iff Crates.io publish succeeded (or was safely skipped due to unconfigured token)
   # ============================================================================
   publish-to-pypi:
-    name: 1. Publish apister to PyPI
+    name: 2. Publish apister to PyPI
+    needs: [publish-to-crates-io]
     runs-on: ubuntu-latest
     environment:
       name: pypi
@@ -94,43 +132,12 @@ jobs:
           skip-existing: true
 
   # ============================================================================
-  # SECTION 2: PUBLISH RUST CRATE TO CRATES.IO
-  # ============================================================================
-  publish-to-crates-io:
-    name: 2. Publish apister_core to Crates.io
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout source code
-        uses: actions/checkout@v4
-
-      - name: Set up Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Check Crates.io authentication token
-        id: check-token
-        env:
-          CARGO_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN || secrets.CARGO_TOKEN }}
-        run: |
-          if [ -z "$CARGO_TOKEN" ]; then
-            echo "has_token=false" >> "$GITHUB_OUTPUT"
-            echo "::warning::Neither CARGO_REGISTRY_TOKEN nor CARGO_TOKEN is set in repository secrets. Skipping crates.io publish."
-          else
-            echo "has_token=true" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Publish apister_core to crates.io
-        if: steps.check-token.outputs.has_token == 'true'
-        env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN || secrets.CARGO_TOKEN }}
-        run: cargo publish --manifest-path crates/apister_core/Cargo.toml --token "${CARGO_REGISTRY_TOKEN}"
-
-  # ============================================================================
   # SECTION 3: CREATE GITHUB RELEASE WITH PRE-BUILT ASSETS
+  # Runs iff both Crates.io and PyPI registries have successfully published
   # ============================================================================
   github-release:
     name: 3. Create GitHub Release
-    needs: [publish-to-pypi, publish-to-crates-io]
-    if: always() && needs.publish-to-pypi.result == 'success'
+    needs: [publish-to-crates-io, publish-to-pypi]
     runs-on: ubuntu-latest
     permissions:
       contents: write  # Required to create GitHub release and upload assets
