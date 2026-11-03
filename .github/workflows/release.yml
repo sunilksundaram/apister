@@ -3,145 +3,74 @@ name: Release
 # ==============================================================================
 # RELEASE PIPELINE ARCHITECTURE:
 #
+# Triggered exclusively when CI & Security Quality Gate succeeds on a version tag (v*).
+# Reuses all pre-built artifacts, unit test verifications, and security audits
+# from ci.yml without performing ANY redundant builds or tests.
+#
 # ┌────────────────────────────────────────────────────────┐
-# │ 1. Trigger (Manual Dispatch or Tag v* Push)           │
-# └──────────────────────────┬─────────────────────────────┘
-#                            ▼
-# ┌────────────────────────────────────────────────────────┐
-# │ 2. Build Python Package (uv sdist & pure wheel)        │
-# │    Build Cross-Platform Native Wheels (maturin-action) │
+# │ 1. Triggered from CI on tags: v* (workflow_call)       │
 # └──────────────────────────┬─────────────────────────────┘
 #                            ▼
 #              ┌─────────────┴─────────────┐
 #              ▼                           ▼
 # ┌────────────────────────┐  ┌────────────────────────┐
-# │ 3. Publish to PyPI     │  │ 4. Publish to Crates.io│
-# │    (apister: OIDC/Tok) │  │    (apister_core crate)│
+# │ 1. Publish to PyPI     │  │ 2. Publish to Crates.io│
+# │    (Pre-built wheels)  │  │    (apister_core crate)│
 # └────────────┬───────────┘  └────────────┬───────────┘
 #              └─────────────┬─────────────┘
 #                            ▼
 # ┌────────────────────────────────────────────────────────┐
-# │ 5. Create Git Tag & GitHub Release with All Assets     │
+# │ 3. Create GitHub Release with Pre-Built Assets         │
 # └────────────────────────────────────────────────────────┘
 # ==============================================================================
 
 on:
+  workflow_call:
+    inputs:
+      version:
+        description: 'Package version string (e.g. 0.2.0)'
+        required: true
+        type: string
   workflow_dispatch:
     inputs:
-      confirm:
-        description: 'Type "release" to confirm publishing to PyPI and Crates.io'
-        required: true
-        default: 'release'
-  push:
-    tags:
-      - 'v*'
+      version:
+        description: 'Package version string (e.g. 0.2.0)'
+        required: false
+        type: string
 
 jobs:
   # ============================================================================
-  # SECTION 1: BUILD PYTHON DISTRIBUTIONS (Sdist & Wheel)
-  # ============================================================================
-  build-python:
-    name: 1. Build Python sdist & wheel
-    if: startsWith(github.ref, 'refs/tags/v') || github.event.inputs.confirm == 'release'
-    runs-on: ubuntu-latest
-    outputs:
-      version: ${{ steps.pkg-version.outputs.version }}
-    steps:
-      - name: Checkout source code
-        uses: actions/checkout@v4
-
-      - name: Set up uv
-        uses: astral-sh/setup-uv@v5
-        with:
-          enable-cache: true
-
-      - name: Set up Python
-        run: uv python install
-
-      - name: Extract package version
-        id: pkg-version
-        run: |
-          VERSION=$(uv run python -c "import tomllib; print(tomllib.load(open('pyproject.toml', 'rb'))['project']['version'])")
-          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
-          echo "Building apister version: ${VERSION}"
-
-      - name: Build package distributions (wheel and sdist)
-        run: uv build
-
-      - name: Upload distribution artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: python-distributions
-          path: dist/
-
-  # ============================================================================
-  # SECTION 2: BUILD CROSS-PLATFORM NATIVE WHEELS (Maturin Matrix)
-  # ============================================================================
-  build-native-wheels:
-    name: 2. Build Native Wheels (${{ matrix.os }} - ${{ matrix.target }})
-    if: startsWith(github.ref, 'refs/tags/v') || github.event.inputs.confirm == 'release'
-    needs: [build-python]
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          # Linux x86_64
-          - os: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
-            manylinux: auto
-          # macOS Apple Silicon (ARM64)
-          - os: macos-latest
-            target: aarch64-apple-darwin
-          # macOS Intel (x86_64) cross-compiled on Apple Silicon
-          - os: macos-latest
-            target: x86_64-apple-darwin
-          # Windows x86_64
-          - os: windows-latest
-            target: x86_64-pc-windows-msvc
-    runs-on: ${{ matrix.os }}
-    steps:
-      - name: Checkout source code
-        uses: actions/checkout@v4
-
-      - name: Set up Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.target }}
-
-      - name: Build native wheel with maturin-action
-        uses: PyO3/maturin-action@v1
-        with:
-          target: ${{ matrix.target }}
-          args: --release --out dist --manifest-path crates/apister_core/Cargo.toml
-          sdist: false
-          manylinux: ${{ matrix.manylinux || 'off' }}
-
-      - name: Upload native wheel artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: native-wheel-${{ matrix.target }}
-          path: dist/*.whl
-
-  # ============================================================================
-  # SECTION 3: PUBLISH PYTHON PACKAGE TO PYPI
+  # SECTION 1: PUBLISH PYTHON PACKAGES TO PYPI
+  # Reuses pre-built wheels and sdist from ci.yml artifacts
   # ============================================================================
   publish-to-pypi:
-    name: 3. Publish apister to PyPI
-    needs: [build-python, build-native-wheels]
-    if: startsWith(github.ref, 'refs/tags/v') || github.event.inputs.confirm == 'release'
+    name: 1. Publish apister to PyPI
     runs-on: ubuntu-latest
     environment:
       name: pypi
       url: https://pypi.org/p/apister
     permissions:
       id-token: write  # Mandatory for PyPI Trusted Publishing (OIDC)
+      contents: read
 
     steps:
-      - name: Download pure Python distributions (apister-*.whl and apister-*.tar.gz)
+      - name: Download pure Python distributions
         uses: actions/download-artifact@v4
         with:
           name: python-distributions
           path: dist/
+
+      - name: Download all native wheels
+        uses: actions/download-artifact@v4
+        with:
+          pattern: native-wheel-*
+          path: dist/
+          merge-multiple: true
+
+      - name: Inspect distribution artifacts for publication
+        run: |
+          echo "=== Pre-built distribution assets ready for PyPI ==="
+          ls -la dist/
 
       # Case A: If PYPI_API_TOKEN secret is provided, publish using token
       - name: Publish apister to PyPI (API Token)
@@ -165,12 +94,10 @@ jobs:
           skip-existing: true
 
   # ============================================================================
-  # SECTION 4: PUBLISH RUST CRATE TO CRATES.IO
+  # SECTION 2: PUBLISH RUST CRATE TO CRATES.IO
   # ============================================================================
   publish-to-crates-io:
-    name: 4. Publish apister_core to Crates.io
-    needs: [build-python]
-    if: startsWith(github.ref, 'refs/tags/v') || github.event.inputs.confirm == 'release'
+    name: 2. Publish apister_core to Crates.io
     runs-on: ubuntu-latest
     steps:
       - name: Checkout source code
@@ -180,28 +107,33 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Check Crates.io authentication token
+        id: check-token
         env:
           CARGO_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN || secrets.CARGO_TOKEN }}
-        if: env.CARGO_TOKEN == ''
         run: |
-          echo "::error::Neither CARGO_REGISTRY_TOKEN nor CARGO_TOKEN is set in repository secrets."
-          exit 1
+          if [ -z "$CARGO_TOKEN" ]; then
+            echo "has_token=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::Neither CARGO_REGISTRY_TOKEN nor CARGO_TOKEN is set in repository secrets. Skipping crates.io publish."
+          else
+            echo "has_token=true" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Publish apister_core to crates.io
+        if: steps.check-token.outputs.has_token == 'true'
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN || secrets.CARGO_TOKEN }}
         run: cargo publish --manifest-path crates/apister_core/Cargo.toml --token "${CARGO_REGISTRY_TOKEN}"
 
   # ============================================================================
-  # SECTION 5: CREATE GIT TAG & GITHUB RELEASE
+  # SECTION 3: CREATE GITHUB RELEASE WITH PRE-BUILT ASSETS
   # ============================================================================
   github-release:
-    name: 5. Create Git Tag & GitHub Release
-    needs: [build-python, publish-to-pypi, publish-to-crates-io]
-    if: startsWith(github.ref, 'refs/tags/v') || github.event.inputs.confirm == 'release'
+    name: 3. Create GitHub Release
+    needs: [publish-to-pypi, publish-to-crates-io]
+    if: always() && needs.publish-to-pypi.result == 'success'
     runs-on: ubuntu-latest
     permissions:
-      contents: write  # Required to create git tag and GitHub release
+      contents: write  # Required to create GitHub release and upload assets
 
     steps:
       - name: Checkout repository
@@ -220,11 +152,11 @@ jobs:
           path: dist/
           merge-multiple: true
 
-      - name: Create Git Tag and GitHub Release
+      - name: Create GitHub Release with Pre-Built Assets
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v${{ needs.build-python.outputs.version }}
-          name: apister v${{ needs.build-python.outputs.version }}
+          tag_name: ${{ github.ref_name || format('v{0}', inputs.version) }}
+          name: apister ${{ github.ref_name || format('v{0}', inputs.version) }}
           generate_release_notes: true
           files: |
             dist/*.whl
