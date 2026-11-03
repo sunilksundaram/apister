@@ -41,6 +41,12 @@ on:
   pull_request:
     branches: ["main"]
   workflow_dispatch:
+    inputs:
+      publish_release:
+        description: "Publish to PyPI, Crates.io & GitHub Releases (only applies if on a tag v*)"
+        type: boolean
+        required: false
+        default: false
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -272,7 +278,12 @@ jobs:
   release:
     name: 7. Publish Release (PyPI, Crates.io, GitHub Release)
     needs: [build-python, build-native-wheels, verify-cargo-package]
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: >-
+      startsWith(github.ref, 'refs/tags/v') &&
+      !contains(github.event.head_commit.message, '[skip release]') &&
+      !contains(github.event.head_commit.message, '[no push]') &&
+      !contains(github.ref_name, '-dryrun') &&
+      (github.event_name != 'workflow_dispatch' || github.event.inputs.publish_release == true || github.event.inputs.publish_release == 'true')
     permissions:
       contents: write
       id-token: write
