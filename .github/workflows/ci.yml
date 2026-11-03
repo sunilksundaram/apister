@@ -3,6 +3,16 @@ name: CI & Security Quality Gate
 # ==============================================================================
 # PIPELINE ARCHITECTURE & QUALITY GATES:
 #
+# Pushes to main or PRs trigger this workflow:
+# 1. Run security audits & static analysis.
+# 2. Run multi-OS unit & regression tests (Linux, macOS, Windows).
+# 3. Build Python sdist and all 4 native wheels (Linux, macOS ARM/Intel, Windows).
+# 4. Verify Rust crate packaging.
+# 5. Upload distribution artifacts and STOP.
+#
+# Releases are triggered separately by creating and pushing a Git tag (v*),
+# which invokes release.yml to download and publish these verified artifacts.
+#
 # ┌────────────────────────────────────────────────────────┐
 # │ 1. CVE Security Audit (pip-audit & Bandit SAST)        │
 # └────────────────────────────────────────────────────────┘
@@ -19,7 +29,7 @@ name: CI & Security Quality Gate
 #              ▼                           ▼
 # ┌────────────────────────┐  ┌────────────────────────┐
 # │ 4. Build Python Sdist  │  │ 5. Build Native Wheels │
-# │    & Wheel (uv build)  │  │    (Linux/macOS/Win)   │
+# │    (uv build --sdist)  │  │    (Linux/macOS/Win)   │
 # └────────────┬───────────┘  └────────────┬───────────┘
 #              │                           │
 #              └─────────────┬─────────────┘
@@ -28,33 +38,23 @@ name: CI & Security Quality Gate
 # │ 6. Verify Rust Crate (cargo package)                   │
 # └──────────────────────────┬─────────────────────────────┘
 #                            ▼
-# ┌────────────────────────────────────────────────────────┐
-# │ 7. Reusable Release Trigger (release.yml on Tags v*)   │
-# │    Reuses builds & quality gates; no separate builds   │
-# └────────────────────────────────────────────────────────┘
+#                       STOP & STORE
+#          Artifacts preserved for release.yml
 # ==============================================================================
 
 on:
   push:
     branches: ["main"]
-    tags: ["v*"]
   pull_request:
     branches: ["main"]
   workflow_dispatch:
-    inputs:
-      publish_release:
-        description: "Publish to PyPI, Crates.io & GitHub Releases (only applies if on a tag v*)"
-        type: boolean
-        required: false
-        default: false
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/v') }}
+  cancel-in-progress: true
 
 permissions:
-  contents: write
-  id-token: write
+  contents: read
 
 jobs:
   # ============================================================================
@@ -171,14 +171,12 @@ jobs:
           path: coverage.xml
 
   # ============================================================================
-  # SECTION 4: BUILD PYTHON DISTRIBUTIONS (Sdist & Pure Wheel)
+  # SECTION 4: BUILD PYTHON DISTRIBUTIONS (Source Distribution)
   # ============================================================================
   build-python:
-    name: 4. Build Python sdist & wheel
+    name: 4. Build Source Distribution (sdist)
     needs: [unit-regression-tests]
     runs-on: ubuntu-latest
-    outputs:
-      version: ${{ steps.pkg-version.outputs.version }}
     steps:
       - name: Checkout source code
         uses: actions/checkout@v4
@@ -190,13 +188,6 @@ jobs:
 
       - name: Set up Python
         run: uv python install
-
-      - name: Extract package version
-        id: pkg-version
-        run: |
-          VERSION=$(uv run python -c "import tomllib; print(tomllib.load(open('pyproject.toml', 'rb'))['project']['version'])")
-          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
-          echo "Building apister version: ${VERSION}"
 
       - name: Build source distribution (sdist)
         run: uv build --sdist
@@ -270,24 +261,3 @@ jobs:
 
       - name: Verify Rust crate packaging (cargo package)
         run: cargo package -p apister_core --no-verify
-
-  # ============================================================================
-  # SECTION 7: TRIGGER RELEASE & PUBLISH (On Tag Push Only)
-  # Reuses artifacts and quality gates from sections 1-6 above; NO rebuilding!
-  # ============================================================================
-  release:
-    name: 7. Publish Release (PyPI, Crates.io, GitHub Release)
-    needs: [build-python, build-native-wheels, verify-cargo-package]
-    if: >-
-      startsWith(github.ref, 'refs/tags/v') &&
-      !contains(github.event.head_commit.message, '[skip release]') &&
-      !contains(github.event.head_commit.message, '[no push]') &&
-      !contains(github.ref_name, '-dryrun') &&
-      (github.event_name != 'workflow_dispatch' || github.event.inputs.publish_release == true || github.event.inputs.publish_release == 'true')
-    permissions:
-      contents: write
-      id-token: write
-    uses: ./.github/workflows/release.yml
-    with:
-      version: ${{ needs.build-python.outputs.version }}
-    secrets: inherit

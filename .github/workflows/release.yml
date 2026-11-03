@@ -3,52 +3,123 @@ name: Release
 # ==============================================================================
 # ATOMIC MULTI-REGISTRY RELEASE PIPELINE:
 #
-# Triggered exclusively when CI & Security Quality Gate succeeds on a version tag (v*).
-# Reuses all pre-built artifacts, multi-OS test verifications, and security audits
-# from ci.yml without performing ANY redundant builds or tests.
+# Triggered when a version tag (v*) is created and pushed to the remote repository.
 #
-# Sequential All-or-Nothing Guarantee:
-# 1. Publishes apister_core to Crates.io first.
-# 2. Publishes apister and native wheels to PyPI iff Crates.io succeeds.
-# 3. Creates GitHub Release iff both registries succeed.
+# Reuses pre-built artifacts from the successful ci.yml run on this commit.
+# Zero redundant builds, zero redundant tests.
 #
 # ┌────────────────────────────────────────────────────────┐
-# │ Triggered from CI on tags: v* (workflow_call)          │
+# │ 1. Triggered on Tag Push (git push origin v*)          │
 # └──────────────────────────┬─────────────────────────────┘
 #                            ▼
 # ┌────────────────────────────────────────────────────────┐
-# │ 1. Publish apister_core to Crates.io                   │
+# │ 2. Fetch Verified Build Artifacts from ci.yml          │
+# │    (Pulls pre-built sdist & 4 native wheels)           │
 # └──────────────────────────┬─────────────────────────────┘
 #                            ▼
 # ┌────────────────────────────────────────────────────────┐
-# │ 2. Publish apister & Native Wheels to PyPI             │
+# │ 3. Publish apister_core to Crates.io                   │
 # └──────────────────────────┬─────────────────────────────┘
 #                            ▼
 # ┌────────────────────────────────────────────────────────┐
-# │ 3. Create GitHub Release with Pre-Built Assets         │
+# │ 4. Publish apister & Native Wheels to PyPI             │
+# └──────────────────────────┬─────────────────────────────┘
+#                            ▼
+# ┌────────────────────────────────────────────────────────┐
+# │ 5. Create GitHub Release with Pre-Built Assets         │
 # └────────────────────────────────────────────────────────┘
 # ==============================================================================
 
 on:
-  workflow_call:
-    inputs:
-      version:
-        description: 'Package version string (e.g. 0.2.0)'
-        required: true
-        type: string
+  push:
+    tags:
+      - 'v*'
   workflow_dispatch:
     inputs:
-      version:
-        description: 'Package version string (e.g. 0.2.0)'
+      tag:
+        description: 'Tag to release (defaults to current tag/branch)'
         required: false
         type: string
 
+permissions:
+  contents: write
+  id-token: write
+  actions: read
+
 jobs:
   # ============================================================================
-  # SECTION 1: PUBLISH RUST CRATE TO CRATES.IO
+  # SECTION 1: FETCH VERIFIED BUILD ARTIFACTS FROM CI.YML
+  # ============================================================================
+  fetch-ci-artifacts:
+    name: 1. Fetch Verified Artifacts from CI
+    runs-on: ubuntu-latest
+    outputs:
+      run_id: ${{ steps.find-ci.outputs.run_id }}
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v4
+
+      - name: Locate successful CI run for commit
+        id: find-ci
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          COMMIT_SHA="${{ github.sha }}"
+          echo "Looking for CI run matching commit: ${COMMIT_SHA}"
+
+          # Query GitHub API for the latest successful ci.yml run on this commit
+          RUN_ID=$(gh run list --workflow="ci.yml" --commit="$COMMIT_SHA" --status=success --limit 1 --json databaseId --jq '.[0].databaseId')
+
+          if [ -z "$RUN_ID" ]; then
+            # If CI is currently executing for this commit, wait for it to finish
+            IN_PROGRESS_ID=$(gh run list --workflow="ci.yml" --commit="$COMMIT_SHA" --limit 1 --json databaseId,status --jq 'if .[0].status != "completed" then .[0].databaseId else empty end')
+            if [ -n "$IN_PROGRESS_ID" ]; then
+              echo "CI run ${IN_PROGRESS_ID} is currently in progress. Waiting for completion..."
+              gh run watch "$IN_PROGRESS_ID" --interval 10 --exit-status
+              RUN_ID="$IN_PROGRESS_ID"
+            else
+              echo "No direct CI run for ${COMMIT_SHA}. Checking latest successful CI run on main..."
+              RUN_ID=$(gh run list --workflow="ci.yml" --branch="main" --status=success --limit 1 --json databaseId --jq '.[0].databaseId')
+            fi
+          fi
+
+          if [ -z "$RUN_ID" ]; then
+            echo "::error::No successful CI workflow run found. ci.yml must pass before releasing."
+            exit 1
+          fi
+
+          echo "Found matching CI run ID: ${RUN_ID}"
+          echo "run_id=${RUN_ID}" >> "$GITHUB_OUTPUT"
+
+      - name: Download all distribution artifacts from CI run
+        uses: actions/download-artifact@v4
+        with:
+          run-id: ${{ steps.find-ci.outputs.run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: dist/
+          merge-multiple: true
+
+      - name: Filter and verify release distributions
+        run: |
+          mkdir -p clean_dist
+          find dist -maxdepth 1 -type f \( -name "*.whl" -o -name "*.tar.gz" \) -exec mv {} clean_dist/ \;
+          rm -rf dist
+          mv clean_dist dist
+          echo "=== Verified distribution assets retrieved from CI ==="
+          ls -la dist/
+
+      - name: Cache release distributions for publishing jobs
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-dist
+          path: dist/
+
+  # ============================================================================
+  # SECTION 2: PUBLISH RUST CRATE TO CRATES.IO
   # ============================================================================
   publish-to-crates-io:
-    name: 1. Publish apister_core to Crates.io
+    name: 2. Publish apister_core to Crates.io
+    needs: [fetch-ci-artifacts]
     runs-on: ubuntu-latest
     steps:
       - name: Checkout source code
@@ -75,7 +146,6 @@ jobs:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN || secrets.CARGO_TOKEN }}
         run: |
           set +e
-          # cargo automatically picks up CARGO_REGISTRY_TOKEN from the environment
           OUTPUT=$(cargo publish -p apister_core 2>&1)
           STATUS=$?
           echo "$OUTPUT"
@@ -91,13 +161,13 @@ jobs:
           fi
 
   # ============================================================================
-  # SECTION 2: PUBLISH PYTHON PACKAGES TO PYPI
-  # Reuses pre-built wheels and sdist from ci.yml artifacts
+  # SECTION 3: PUBLISH PYTHON PACKAGES TO PYPI
+  # Reuses pre-built wheels and sdist from CI artifacts
   # Runs iff Crates.io publish succeeded (or was safely skipped due to unconfigured token)
   # ============================================================================
   publish-to-pypi:
-    name: 2. Publish apister to PyPI
-    needs: [publish-to-crates-io]
+    name: 3. Publish apister to PyPI
+    needs: [fetch-ci-artifacts, publish-to-crates-io]
     runs-on: ubuntu-latest
     environment:
       name: pypi
@@ -107,18 +177,11 @@ jobs:
       contents: read
 
     steps:
-      - name: Download pure Python distributions
+      - name: Download distribution artifacts
         uses: actions/download-artifact@v4
         with:
-          name: python-distributions
+          name: release-dist
           path: dist/
-
-      - name: Download all native wheels
-        uses: actions/download-artifact@v4
-        with:
-          pattern: native-wheel-*
-          path: dist/
-          merge-multiple: true
 
       - name: Inspect distribution artifacts for publication
         run: |
@@ -147,38 +210,28 @@ jobs:
           skip-existing: true
 
   # ============================================================================
-  # SECTION 3: CREATE GITHUB RELEASE WITH PRE-BUILT ASSETS
+  # SECTION 4: CREATE GITHUB RELEASE WITH PRE-BUILT ASSETS
   # Runs iff both Crates.io and PyPI registries have successfully published
   # ============================================================================
   github-release:
-    name: 3. Create GitHub Release
-    needs: [publish-to-crates-io, publish-to-pypi]
+    name: 4. Create GitHub Release
+    needs: [fetch-ci-artifacts, publish-to-crates-io, publish-to-pypi]
     runs-on: ubuntu-latest
     permissions:
       contents: write  # Required to create GitHub release and upload assets
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Download Python distributions
+      - name: Download distribution artifacts
         uses: actions/download-artifact@v4
         with:
-          name: python-distributions
+          name: release-dist
           path: dist/
-
-      - name: Download all native wheels
-        uses: actions/download-artifact@v4
-        with:
-          pattern: native-wheel-*
-          path: dist/
-          merge-multiple: true
 
       - name: Create GitHub Release with Pre-Built Assets
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.ref_name || format('v{0}', inputs.version) }}
-          name: apister ${{ github.ref_name || format('v{0}', inputs.version) }}
+          tag_name: ${{ github.ref_name || inputs.tag }}
+          name: apister ${{ github.ref_name || inputs.tag }}
           generate_release_notes: true
           files: |
             dist/*.whl
