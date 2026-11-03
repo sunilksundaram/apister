@@ -14,12 +14,17 @@ from typing import Any
 from apister.types import Envelope, OffsetUnavailable
 
 try:
-    import _apister_rs  # type: ignore[import-untyped,import-not-found]
+    from apister import _apister_rs  # type: ignore[attr-defined,import-untyped,import-not-found]
 
     HAS_RUST_CORE = True
 except ImportError:
-    _apister_rs = None  # type: ignore[assignment]
-    HAS_RUST_CORE = False
+    try:
+        import _apister_rs  # type: ignore[import-untyped,import-not-found]
+
+        HAS_RUST_CORE = True
+    except ImportError:
+        _apister_rs = None  # type: ignore[assignment]
+        HAS_RUST_CORE = False
 
 
 def native_crc32(data: bytes) -> int:

@@ -34,8 +34,14 @@ PyPI = "https://pypi.org/project/apister/"
 Issues = "https://github.com/sunilksundaram/apister/issues"
 
 [build-system]
-requires = ["uv_build>=0.12.19,<0.14.0"]
-build-backend = "uv_build"
+requires = ["maturin>=1.7,<2.0"]
+build-backend = "maturin"
+
+[tool.maturin]
+manifest-path = "crates/apister_core/Cargo.toml"
+python-source = "src"
+module-name = "apister._apister_rs"
+strip = true
 
 [dependency-groups]
 dev = [

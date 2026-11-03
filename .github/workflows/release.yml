@@ -76,7 +76,7 @@ jobs:
         run: |
           set +e
           # cargo automatically picks up CARGO_REGISTRY_TOKEN from the environment
-          OUTPUT=$(cargo publish --manifest-path crates/apister_core/Cargo.toml 2>&1)
+          OUTPUT=$(cargo publish -p apister_core 2>&1)
           STATUS=$?
           echo "$OUTPUT"
 

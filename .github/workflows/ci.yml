@@ -100,10 +100,10 @@ jobs:
           components: clippy, rustfmt
 
       - name: Check Rust formatting (cargo fmt)
-        run: cargo fmt --manifest-path crates/apister_core/Cargo.toml --check
+        run: cargo fmt --all --check
 
       - name: Run Rust linter (cargo clippy)
-        run: cargo clippy --manifest-path crates/apister_core/Cargo.toml --all-targets -- -D warnings
+        run: cargo clippy --all-targets --all-features -- -D warnings
 
       - name: Set up uv
         uses: astral-sh/setup-uv@v5
@@ -155,7 +155,7 @@ jobs:
         run: uv sync --all-extras --group dev
 
       - name: Build and install Rust native accelerator
-        run: uv run maturin develop -m crates/apister_core/Cargo.toml --release
+        run: uv run maturin develop --release
 
       - name: Run Unit & Regression Tests (with Coverage)
         run: |
@@ -198,8 +198,8 @@ jobs:
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
           echo "Building apister version: ${VERSION}"
 
-      - name: Build package distributions (wheel and sdist)
-        run: uv build
+      - name: Build source distribution (sdist)
+        run: uv build --sdist
 
       - name: Upload distribution artifacts
         uses: actions/upload-artifact@v4
@@ -244,7 +244,7 @@ jobs:
         uses: PyO3/maturin-action@v1
         with:
           target: ${{ matrix.target }}
-          args: --release --out dist --manifest-path crates/apister_core/Cargo.toml
+          args: --release --out dist
           sdist: false
           manylinux: ${{ matrix.manylinux || 'off' }}
 
@@ -269,7 +269,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Verify Rust crate packaging (cargo package)
-        run: cargo package --manifest-path crates/apister_core/Cargo.toml --no-verify
+        run: cargo package -p apister_core --no-verify
 
   # ============================================================================
   # SECTION 7: TRIGGER RELEASE & PUBLISH (On Tag Push Only)

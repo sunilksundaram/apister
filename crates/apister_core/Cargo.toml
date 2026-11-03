@@ -16,7 +16,7 @@ name = "_apister_rs"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-pyo3 = { version = "0.24", features = ["extension-module", "abi3-py310"] }
+pyo3 = { version = "0.24", features = ["extension-module", "abi3-py310", "generate-import-lib"] }
 crc32fast = "1.4"
 memmap2 = "0.9"
 lz4_flex = "0.11"
