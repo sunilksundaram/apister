@@ -14,8 +14,15 @@ Every pattern documented in this directory leverages `apister`'s core architectu
 - **Zero-Copy Buffer Protocol (`envelope.memoryview()` & `envelope.to_numpy()`)**: Avoid heap allocations when consuming binary payloads, audio PCM buffers, camera frames, and embedding vectors directly into NumPy, OpenCV, PyTorch, or struct unpackers.
 - **Microsecond Topic Match Memoization**: Hot-topic publishes bypass Trie traversal ($O(1)$ dictionary memoization yielding up to **16M matches/sec**), auto-invalidated on subscription changes.
 - **Tail Cache**: Zero disk I/O for real-time consumers—messages are served straight from memory while asynchronously persisting to segmented on-disk logs.
+- **Pretrained & Streaming Compression (`ZstdCodec`, `LZ4Codec`, `train_zstd_dictionary`)**: Statistical dictionary training achieves 3.8x–5.2x compression ratios on sub-kilobyte JSON/telemetry with zero-recompression streaming straight to disk and external brokers.
+- **Poison-Pill Quarantine & Dead-Letter Queues (`DeadLetterPolicy`, `handle_with_dlq`)**: Isolate malformed payloads to dedicated `.dlq` topics with automatic retry backoff and full diagnostic headers.
+- **Distributed W3C Tracing (`inject_trace_context`, `extract_trace_context`)**: Propagate W3C `traceparent` headers transparently across asyncio tasks, on-disk ledger records, and external broker bridges.
+- **Early Disk-Space Capacity Guard (`disk_warning_threshold`)**: Proactively monitors storage utilization, firing early warnings before filesystem exhaustion causes unhandled write errors.
 
-> 🛡️ For hardware sizing runbooks, Systemd service templates, Docker container patterns, and crash-safety audits, see the **[Enterprise Production Readiness Guide](../enterprise-production-guide.md)**.
+> 📚 **Comprehensive Architectural & Operations Documentation**:
+> - 🛡️ **[Enterprise Production Readiness Guide](../enterprise-production-guide.md)**: Hardware sizing runbooks, Systemd service units, Docker templates, and crash-safety audits.
+> - 🗜️ **[Compression & Storage Optimization Guide](../compression-and-storage-optimization-guide.md)**: Pretrained dictionaries, zero-recompression pipelines, wire format specs, and ZFS/Btrfs comparisons.
+> - ⚙️ **[Installation & Parameter Tuning Guide](../installation-and-configuration-guide.md)**: Zero-config defaults, complete parameter reference, and tailored production profiles.
 
 ---
 

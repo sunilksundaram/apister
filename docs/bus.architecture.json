@@ -2,50 +2,68 @@
   "schema_version": 1,
   "diagram_type": "architecture",
   "meta": {
-    "title": "Apister Bus",
+    "title": "Apister Bus Architecture (v0.2.0)",
     "output": "bus.html",
     "quality_profile": "showcase",
     "locale": "en",
-    "viewBox": [1100, 420],
+    "viewBox": [1080, 430],
     "views": [
       {
         "id": "publish-path",
-        "label": "Publish path",
-        "focus": ["publishers", "bus", "ledger", "subscribers"],
-        "note": "A payload is appended once, then fan-out carries only the ledger offset."
+        "label": "Publish & Zero-Copy Path",
+        "focus": ["publishers", "bus", "rust-core", "ledger", "subscribers", "compression"],
+        "note": "Payload is compressed and appended once to the segmented ledger; fan-out distributes zero-copy 8-byte offsets."
+      },
+      {
+        "id": "resilience",
+        "label": "Resilience & Telemetry",
+        "focus": ["bus", "dedup", "dlq", "guard", "tracing"],
+        "note": "Poison pills route to DLQ, storage guards warn before disk-full, and W3C traceparents propagate end-to-end."
       },
       {
         "id": "brokers",
-        "label": "External brokers",
+        "label": "External Brokers & Outbox",
         "focus": ["reconnect", "redis", "rabbitmq", "kafka"],
-        "note": "The outbox resumes from a cursor after reconnect."
+        "note": "The outbox bridge resumes from persistent cursors after reconnect with loop-free deduplication."
       }
     ]
   },
   "components": [
-    { "id": "ledger", "type": "database", "label": "Segment ledger", "sublabel": "append-only", "pos": [210, 24], "size": [150, 58] },
-    { "id": "dedup", "type": "database", "label": "Message-id log", "sublabel": "bounded tail", "pos": [430, 24], "size": [150, 58] },
-    { "id": "publishers", "type": "external", "label": "Publishers", "sublabel": "in-process tasks", "pos": [20, 150], "size": [150, 58] },
-    { "id": "bus", "type": "backend", "label": "Bus writer", "sublabel": "trie + lock", "pos": [210, 150], "size": [150, 58], "tag": "single writer" },
-    { "id": "subscribers", "type": "external", "label": "Subscribers", "sublabel": "bounded queues", "pos": [430, 150], "size": [150, 58] },
-    { "id": "reconnect", "type": "backend", "label": "Reconnect", "sublabel": "backoff + jitter", "pos": [210, 280], "size": [150, 58] },
-    { "id": "redis", "type": "messagebus", "label": "Redis", "sublabel": "RESP pub/sub", "pos": [460, 280], "size": [140, 56] },
-    { "id": "rabbitmq", "type": "messagebus", "label": "RabbitMQ", "sublabel": "topic exchange", "pos": [680, 280], "size": [150, 56] },
-    { "id": "kafka", "type": "messagebus", "label": "Kafka", "sublabel": "optional client", "pos": [900, 280], "size": [140, 56] }
+    { "id": "rust-core", "type": "backend", "label": "Rust Core", "sublabel": "SIMD CRC32 + trie", "pos": [20, 24], "size": [160, 58], "tag": "_apister_rs" },
+    { "id": "ledger", "type": "database", "label": "Segment ledger", "sublabel": "append-only / mmap", "pos": [210, 24], "size": [160, 58] },
+    { "id": "dedup", "type": "database", "label": "Message-id log", "sublabel": "bounded tail / ring", "pos": [430, 24], "size": [160, 58] },
+    { "id": "guard", "type": "security", "label": "Storage Guard", "sublabel": "capacity threshold", "pos": [650, 24], "size": [160, 58] },
+    { "id": "tracing", "type": "security", "label": "W3C Tracing", "sublabel": "traceparent context", "pos": [870, 24], "size": [160, 58] },
+    { "id": "publishers", "type": "external", "label": "Publishers", "sublabel": "in-process tasks", "pos": [20, 160], "size": [160, 58] },
+    { "id": "bus", "type": "backend", "label": "Bus writer", "sublabel": "trie + lock", "pos": [210, 160], "size": [160, 58], "tag": "single writer" },
+    { "id": "subscribers", "type": "external", "label": "Subscribers", "sublabel": "bounded queues", "pos": [430, 160], "size": [160, 58] },
+    { "id": "dlq", "type": "backend", "label": "Dead-Letter Queue", "sublabel": "poison quarantine", "pos": [650, 160], "size": [160, 58], "tag": ".dlq" },
+    { "id": "compression", "type": "backend", "label": "Codecs Engine", "sublabel": "Zstd + Dict / LZ4", "pos": [870, 160], "size": [160, 58] },
+    { "id": "reconnect", "type": "backend", "label": "Reconnect", "sublabel": "backoff + jitter", "pos": [210, 300], "size": [160, 58] },
+    { "id": "redis", "type": "messagebus", "label": "Redis", "sublabel": "RESP pub/sub", "pos": [430, 300], "size": [150, 58] },
+    { "id": "rabbitmq", "type": "messagebus", "label": "RabbitMQ", "sublabel": "topic exchange", "pos": [650, 300], "size": [150, 58] },
+    { "id": "kafka", "type": "messagebus", "label": "Kafka", "sublabel": "optional client", "pos": [870, 300], "size": [150, 58] }
   ],
   "connections": [
-    { "id": "publish", "from": "publishers", "to": "bus", "label": "publish", "variant": "emphasis" },
+    { "id": "publish", "from": "publishers", "to": "bus", "label": "publish / batch", "variant": "emphasis" },
     { "id": "append", "from": "bus", "to": "ledger", "label": "append", "fromSide": "top", "toSide": "bottom", "labelDx": -36 },
+    { "id": "accelerate", "from": "ledger", "to": "rust-core", "label": "SIMD / mmap", "fromSide": "left", "toSide": "right" },
     { "id": "remember", "from": "bus", "to": "dedup", "label": "message id", "fromSide": "top", "toSide": "bottom" },
+    { "id": "guard-check", "from": "bus", "to": "guard", "label": "disk warning", "fromSide": "top", "toSide": "bottom" },
+    { "id": "trace-inject", "from": "bus", "to": "tracing", "label": "traceparent", "fromSide": "top", "toSide": "bottom" },
     { "id": "fanout", "from": "bus", "to": "subscribers", "label": "offsets" },
-    { "id": "outbox", "from": "bus", "to": "reconnect", "label": "outbox", "fromSide": "bottom", "toSide": "top", "labelAt": [285, 222] },
+    { "id": "quarantine", "from": "subscribers", "to": "dlq", "label": "poison pill", "fromSide": "right", "toSide": "left" },
+    { "id": "compress", "from": "bus", "to": "compression", "label": "pack / unpack", "fromSide": "right", "toSide": "left" },
+    { "id": "outbox", "from": "bus", "to": "reconnect", "label": "outbox", "fromSide": "bottom", "toSide": "top", "labelAt": [285, 230] },
     { "id": "to-redis", "from": "reconnect", "to": "redis", "label": "RESP" },
     { "id": "to-rabbit", "from": "reconnect", "to": "rabbitmq", "label": "AMQP", "fromSide": "bottom", "toSide": "bottom" },
     { "id": "to-kafka", "from": "reconnect", "to": "kafka", "label": "produce", "fromSide": "bottom", "toSide": "bottom" }
   ],
   "cards": [
-    { "dot": "cyan", "title": "Backpressure", "items": ["Bounded offset queues", "Block or drop a slow consumer"] },
-    { "dot": "emerald", "title": "Durability", "items": ["Append-only segment ledger", "Sentinel shutdown and fsync"] },
-    { "dot": "amber", "title": "Brokers", "items": ["Redis built in; RabbitMQ and Kafka optional", "Backoff reconnect and id dedup"] }
+    { "dot": "cyan", "title": "Backpressure & Fanout", "items": ["Bounded 8-byte offset queues", "Block or drop slow consumers", "Microsecond topic trie memoization"] },
+    { "dot": "emerald", "title": "Durability & Rust Core", "items": ["SIMD CRC32 and mmap reads via _apister_rs", "Append-only segment ledger with fsync", "Binary checkpoint and corruption self-healing"] },
+    { "dot": "blue", "title": "Compression & Codecs", "items": ["Pretrained Zstd dictionaries for <1KB payloads", "Zero-recompression streaming with LZ4/Zstd", "Up to 5.2x storage and egress reduction"] },
+    { "dot": "rose", "title": "Resilience & Telemetry", "items": ["Poison-pill quarantine via DeadLetterPolicy", "W3C distributed tracing context propagation", "Early disk capacity warning threshold"] },
+    { "dot": "amber", "title": "External Brokers", "items": ["Redis built in; RabbitMQ and Kafka optional", "Backoff reconnect and loop-free id dedup", "Persistent consumer cursors"] }
   ]
 }

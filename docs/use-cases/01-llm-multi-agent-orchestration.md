@@ -57,17 +57,21 @@ Subscribers use MQTT wildcards:
 ```python
 import asyncio
 from pathlib import Path
-from apister import Bus, OverflowPolicy
+from apister import Bus, OverflowPolicy, inject_trace_context, extract_trace_context
 
 
 async def agent_streamer(bus: Bus, session_id: str) -> None:
-    """Simulates an LLM streaming reasoning and output tokens."""
+    """Simulates an LLM streaming reasoning and output tokens with W3C tracing."""
     tokens = ["Thinking", " through", " the", " query...", "\nHere", " is", " the", " solution."]
+    traceparent = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
+
     for token in tokens:
         topic = (
             f"agent/{session_id}/thought" if "Thinking" in token else f"agent/{session_id}/output"
         )
-        await bus.publish(topic, token.encode("utf-8"))
+        # Propagate distributed tracing context seamlessly in-band
+        chunk_with_trace = inject_trace_context(token.encode("utf-8"), traceparent=traceparent)
+        await bus.publish(topic, chunk_with_trace)
         await asyncio.sleep(0.02)  # Simulating 50 tokens/sec
 
 
@@ -76,25 +80,27 @@ async def websocket_client_consumer(bus: Bus, session_id: str) -> None:
     sub = await bus.subscribe(f"agent/{session_id}/output")
     print("[UI] Connected to output stream...")
     async for envelope in sub:
-        print(f"[UI Stream] {envelope.payload.decode()}", end="", flush=True)
+        _, text_bytes = extract_trace_context(envelope.payload)
+        print(f"[UI Stream] {text_bytes.decode()}", end="", flush=True)
 
 
 async def guardrail_safety_monitor(bus: Bus, session_id: str) -> None:
     """Inspects all tokens (thoughts and outputs) for disallowed patterns."""
-    sub = await bus.subscribe(f"agent/{session_id}/#", name=f"guardrail-{session_id}")
+    sub = await bus.subscribe(f"agent/{session_id}/#", cursor=f"guardrail-{session_id}")
     async for envelope in sub:
-        text = envelope.payload.decode()
+        trace_id, text_bytes = extract_trace_context(envelope.payload)
+        text = text_bytes.decode()
         if "MALICIOUS" in text:
-            print(f"\n[ALERT] Guardrail tripped on topic {envelope.topic}!")
+            print(f"\n[ALERT] Guardrail tripped on topic {envelope.topic}! Trace: {trace_id}")
         await sub.ack(envelope)
 
 
 async def trajectory_eval_recorder(bus: Bus, session_id: str) -> None:
     """Durable recorder tracking the agent's full execution trace."""
-    sub = await bus.subscribe(f"agent/{session_id}/#", name=f"audit-{session_id}")
+    sub = await bus.subscribe(f"agent/{session_id}/#", cursor=f"audit-{session_id}")
     async for envelope in sub:
-        # Full envelope contains timestamp_ns, offset, message_id
-        # Perfect for constructing fine-tuning datasets
+        # Full envelope contains timestamp_ns, offset, message_id, headers
+        # Traceparent header binds offline trajectories directly to OpenTelemetry APMs
         await sub.ack(envelope)
 
 
@@ -104,6 +110,7 @@ async def main() -> None:
         storage,
         tail_cache_bytes=16 * 1024 * 1024,  # Keep hot token streams in RAM
         overflow=OverflowPolicy.DROP_OLDEST,  # Live UI drops oldest if network stalls
+        disk_warning_threshold=0.90,  # Alert early if trajectory storage approaches 90% capacity
     ) as bus:
         session = "sess_001"
         await asyncio.gather(
@@ -127,3 +134,4 @@ if __name__ == "__main__":
 | `tail_cache_bytes` | `16–64 MiB` | Holds all active streaming tokens in RAM; consumers never hit disk. |
 | `overflow` | `OverflowPolicy.DROP_OLDEST` | Fast token generators won't stall if a client's WebSocket slows down. |
 | `commit_every` | `256` | Batches disk commits to keep the training/trajectory ledger efficient. |
+| `disk_warning_threshold` | `0.90` | Proactively alerts before high-throughput multi-agent trajectories fill local disk. |

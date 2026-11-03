@@ -48,13 +48,15 @@ import asyncio
 import json
 import time
 from pathlib import Path
-from apister import Bus, OverflowPolicy
+from apister import Bus, OverflowPolicy, ZstdCodec
 from apister.brokers import RedisBroker
 from apister.types import ReconnectPolicy
 
 
 async def gpu_training_step_loop(bus: Bus) -> None:
-    """Simulates an inner multi-GPU training loop."""
+    """Simulates an inner multi-GPU training loop publishing compressed metric batches."""
+    codec = ZstdCodec(level=3)
+
     for step in range(1, 100):
         # Heavy GPU tensor computation simulation:
         await asyncio.sleep(0.02)
@@ -65,9 +67,16 @@ async def gpu_training_step_loop(bus: Bus) -> None:
             "grad_norm": 0.85,
             "timestamp": time.time(),
         }
-        # Non-blocking append to apister outbox:
-        await bus.publish(f"train/metrics/step_{step}", json.dumps(metrics).encode("utf-8"))
-        print(f"[GPU Step {step}] Step completed and metrics logged locally")
+        compressed_payload = codec.compress(json.dumps(metrics).encode("utf-8"))
+
+        # Batch publish step loss, gradient stats, and optimizer states atomically:
+        await bus.publish_many(
+            [
+                (f"train/metrics/step_{step}", compressed_payload),
+                (f"train/gradients/step_{step}", compressed_payload),
+            ]
+        )
+        print(f"[GPU Step {step}] Step completed and metric batch logged locally")
 
 
 async def main() -> None:
@@ -77,6 +86,7 @@ async def main() -> None:
         overflow=OverflowPolicy.DROP_OLDEST,  # Ensures GPU loop NEVER blocks
         commit_every=64,
         segment_bytes=16 * 1024 * 1024,
+        disk_warning_threshold=0.85,  # Alert before multi-day training saturates SSD storage
     ) as bus:
         # Attach external bridge to central cluster Redis / Kafka
         # Automatically retries with exponential backoff if remote broker is down

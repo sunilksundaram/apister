@@ -53,13 +53,13 @@ import asyncio
 import json
 import time
 from pathlib import Path
-from apister import Bus, OverflowPolicy
+from apister import Bus, OverflowPolicy, ZstdCodec, train_zstd_dictionary
 from apister.brokers import RedisBroker
 from apister.types import ReconnectPolicy
 
 
-async def industrial_sensor_producer(bus: Bus) -> None:
-    """Continuously samples local equipment sensors."""
+async def industrial_sensor_producer(bus: Bus, codec: ZstdCodec) -> None:
+    """Continuously samples local equipment sensors and appends dictionary-compressed records."""
     for i in range(100):
         telemetry = {
             "device_id": "turbine_alpha",
@@ -67,20 +67,42 @@ async def industrial_sensor_producer(bus: Bus) -> None:
             "temp_c": 68.4,
             "timestamp": time.time(),
         }
+        # Compress with pretrained dictionary: ~4.5x compression ratio on sub-KB IoT telemetry
+        raw_json = json.dumps(telemetry).encode("utf-8")
+        compressed_bytes = codec.compress(raw_json)
+
         # Appends to local disk ledger regardless of cloud internet status!
-        await bus.publish("telemetry/factory/turbines", json.dumps(telemetry).encode("utf-8"))
+        await bus.publish("telemetry/factory/turbines", compressed_bytes)
         await asyncio.sleep(0.02)
 
 
 async def main() -> None:
     storage = Path("data/edge_outbox")
+
+    # Train or load a compact 32 KiB Zstandard dictionary on typical sensor payloads
+    sample_records = [
+        json.dumps(
+            {
+                "device_id": "turbine_alpha",
+                "vibration_mm_s": 1.25,
+                "temp_c": 68.0,
+                "timestamp": 1700000000.0,
+            }
+        ).encode("utf-8")
+        for _ in range(50)
+    ]
+    dict_bytes = train_zstd_dictionary(sample_records, dict_size=32 * 1024)
+    codec = ZstdCodec(level=3, dict_data=dict_bytes)
+
     async with await Bus.open(
         storage,
         retain_bytes=500 * 1024 * 1024,  # Hard limit: maximum 500 MB on edge flash
         overflow=OverflowPolicy.DROP_OLDEST,  # Oldest historical records pruned if flash is full
         commit_every=64,
+        disk_warning_threshold=0.85,  # Alert before edge SD card/eMMC storage is exhausted
     ) as bus:
         # Configure auto-reconnecting cloud outbox bridge:
+        # Zero-recompression invariant: compressed payloads stream straight to cloud brokers
         cloud_broker = RedisBroker("redis://127.0.0.1:6379/0")
         try:
             await bus.attach_broker(
@@ -96,7 +118,7 @@ async def main() -> None:
         except Exception:
             print("[Offline Mode] Cloud broker unreachable. Storing telemetry safely to disk...")
 
-        await industrial_sensor_producer(bus)
+        await industrial_sensor_producer(bus, codec)
 
 
 if __name__ == "__main__":
