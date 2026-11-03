@@ -1,6 +1,6 @@
 [project]
 name = "apister"
-version = "0.2.1"
+version = "0.2.2"
 description = "Lightweight durable asyncio pub/sub with broker reconnect"
 readme = "README.md"
 license = "MIT"
